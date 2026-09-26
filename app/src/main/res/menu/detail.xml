@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item android:id="@+id/action_digest" android:title="@string/detail_digest" app:showAsAction="never" />
+    <item android:id="@+id/action_edit" android:title="@string/detail_edit" app:showAsAction="never" />
+    <item android:id="@+id/action_copy" android:title="@string/detail_copy" app:showAsAction="never" />
+    <item android:id="@+id/action_share" android:title="@string/detail_share" app:showAsAction="never" />
+    <item android:id="@+id/action_export" android:title="@string/detail_export" app:showAsAction="never" />
+    <item android:id="@+id/action_rename" android:title="@string/detail_rename" app:showAsAction="never" />
+    <item android:id="@+id/action_delete" android:title="@string/detail_delete" app:showAsAction="never" />
+</menu>

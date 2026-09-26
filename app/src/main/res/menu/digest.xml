@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item android:id="@+id/action_ai" android:title="@string/digest_ai" app:showAsAction="never" />
+    <item android:id="@+id/action_rebuild" android:title="@string/digest_rebuild" app:showAsAction="never" />
+    <item android:id="@+id/action_view" android:title="@string/digest_view_raw" app:showAsAction="never" />
+    <item android:id="@+id/action_font" android:title="@string/digest_font" app:showAsAction="never" />
+    <item android:id="@+id/action_copy" android:title="@string/digest_copy" app:showAsAction="never" />
+    <item android:id="@+id/action_share" android:title="@string/digest_share" app:showAsAction="never" />
+    <item android:id="@+id/action_export" android:title="@string/digest_export" app:showAsAction="never" />
+</menu>

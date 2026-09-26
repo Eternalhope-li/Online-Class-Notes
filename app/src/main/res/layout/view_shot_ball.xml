@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 悬浮的截图圆钮：上面小的是关闭，下面大的是截图；整块都能拖，松手自动贴边 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="6dp">
+
+    <ImageView
+        android:id="@+id/close"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:alpha="0.75"
+        android:background="@drawable/bg_shot_close"
+        android:contentDescription="@string/shot_close"
+        android:padding="6dp"
+        android:src="@drawable/ic_close" />
+
+    <ImageView
+        android:id="@+id/ball"
+        android:layout_width="54dp"
+        android:layout_height="54dp"
+        android:layout_marginTop="6dp"
+        android:alpha="0.92"
+        android:background="@drawable/bg_shot_ball"
+        android:contentDescription="@string/shot_capture"
+        android:elevation="6dp"
+        android:padding="13dp"
+        android:src="@drawable/ic_shot" />
+</LinearLayout>

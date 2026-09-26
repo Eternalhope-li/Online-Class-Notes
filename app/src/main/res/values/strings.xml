@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">网课笔记</string>
+
+    <string name="channel_recording">记录状态</string>
+    <string name="channel_recording_desc">显示正在记录的提示与快捷操作</string>
+    <string name="notif_title">正在自动记笔记</string>
+    <string name="notif_pause">暂停</string>
+    <string name="notif_resume">继续</string>
+    <string name="notif_stop">停止并保存</string>
+
+    <string name="main_search_hint">搜索笔记内容</string>
+    <string name="main_empty">还没有笔记\n点下面的「开始记录」，老师讲的话会自动变成文字</string>
+    <string name="main_start">开始记录</string>
+    <string name="main_recording">正在记录中，点这里回到记录页</string>
+    <string name="main_settings">设置</string>
+
+    <string name="live_title">实时记录</string>
+    <string name="live_hint">正在等待声音…\n把手机放在旁边就行，说话内容会自动变成文字</string>
+    <string name="live_mark">重点标记</string>
+    <string name="live_pause">暂停</string>
+    <string name="live_resume">继续</string>
+    <string name="live_stop">停止并保存</string>
+    <string name="live_font">字号</string>
+    <string name="live_ready">模型已就绪</string>
+    <string name="live_preparing">正在加载离线模型（首次约需几秒）…</string>
+    <string name="live_listening">正在聆听…</string>
+    <string name="live_paused">已暂停</string>
+    <string name="live_skipped">有 %1$d 句因为手机跟不上被跳过</string>
+    <string name="live_mic">麦克风</string>
+    <string name="live_internal">内录系统声音</string>
+    <string name="live_lines">%1$d 句 · %2$d 字</string>
+    <string name="star_marker">手动标记</string>
+    <string name="tag_important">重点</string>
+
+    <string name="detail_edit">编辑全文</string>
+    <string name="detail_save">保存</string>
+    <string name="detail_cancel">取消</string>
+    <string name="detail_copy">复制全文</string>
+    <string name="detail_share">分享</string>
+    <string name="detail_export">导出到下载目录</string>
+    <string name="detail_rename">重命名</string>
+    <string name="detail_delete">删除</string>
+    <string name="detail_delete_msg">删除后无法恢复，确定删除这篇笔记吗？</string>
+    <string name="detail_copied">已复制到剪贴板</string>
+<string name="export_done_two">已导出：%1$s　和　%2$s</string>
+    <string name="detail_export_failed">导出失败：%1$s</string>
+    <string name="detail_meta">%1$s · %2$s · %3$d 句 · %4$d 字 · 重点 %5$d 处</string>
+    <string name="detail_plain_hint">每行开头的时间戳（如 [01:23]）请保留，方便对应课程进度</string>
+    <string name="detail_empty">这篇笔记还没有内容</string>
+    <string name="common_ok">确定</string>
+    <string name="common_cancel">取消</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_source">音频来源</string>
+    <string name="settings_source_mic">麦克风</string>
+    <string name="settings_source_mic_desc">通用。手机外放时也能收录</string>
+    <string name="settings_source_internal">内录系统声音</string>
+    <string name="settings_source_internal_desc">更清晰，Android 10 以上。部分 App 禁止内录，需授权录屏</string>
+    <string name="settings_threads">识别线程数</string>
+    <string name="settings_threads_value">%1$d 线程</string>
+    <string name="settings_threads_desc">手机强劲可调到 3–4；若发烫或卡顿，调回 2</string>
+    <string name="settings_highlight">自动标记重点</string>
+    <string name="settings_highlight_desc">听到「重点 / 必考 / 注意」等词时自动标星</string>
+    <string name="settings_keep_screen">记录时保持屏幕常亮</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_about_text">完全离线运行：不联网、不上传任何音频或文字。\n语音识别引擎：sherpa-onnx 1.13.8（Apache-2.0）\n识别模型：SenseVoice-Small 中文 int8（约 228 MB，随安装包内置）\n分段与静音检测：Silero VAD\n知识点整理：本地算法（免费、秒出）+ 可选大模型\n\n识别结果可能存在误差，请以课程原文为准。</string>
+
+    <string name="perm_need_mic">需要录音权限才能把老师的话变成文字</string>
+    <string name="perm_denied">没有拿到权限，暂时无法记录</string>
+    <string name="err_model">模型加载失败：%1$s</string>
+    <string name="toast_started">开始记录，放心听课吧</string>
+    <string name="toast_saved">已保存到笔记库</string>
+    <string name="toast_deleted">已删除</string>
+    <string name="toast_stop_first">请先停止当前记录</string>
+    <string name="toast_projection_denied">没有授权录屏，无法内录系统声音</string>
+    <string name="live_stop_confirm">停止记录并保存这篇笔记？</string>
+    <string name="note_save_title">保存笔记</string>
+    <string name="note_title_hint">给这次记录起个名字</string>
+    <string name="note_default_title">网课笔记 %1$s</string>
+    <string name="common_save">保存</string>
+    <string name="detail_saved">已保存</string>
+    <string name="live_internal_silent">选了内录但一直没听到声音？这个 App 可能禁止被录制，去「设置」改回麦克风</string>
+    <string name="detail_digest">整理成知识点笔记</string>
+
+    <string name="digest_title">知识点笔记</string>
+    <string name="digest_ai">用 AI 体系化整理（需配置）</string>
+    <string name="digest_rebuild">用本地算法重新整理</string>
+    <string name="digest_copy">复制整理稿</string>
+    <string name="digest_share">分享</string>
+    <string name="digest_export">导出到下载目录</string>
+    <string name="digest_working">正在整理…</string>
+    <string name="digest_saved_status">已保存的整理稿</string>
+    <string name="digest_local_done">本地离线整理完成：%1$d 句 → %2$d 节 / %3$d 个要点</string>
+    <string name="digest_ai_done">AI 体系化整理完成（%1$s）</string>
+    <string name="digest_ai_loading">AI 正在整理（第 %1$d/%2$d 段 · %3$s）…</string>
+    <string name="digest_ai_need_key">还没配置 API Key，去「设置 → 在线整理」填一个就能用</string>
+    <string name="digest_empty">这篇笔记还没有内容可以整理</string>
+    <string name="digest_copied">已复制到剪贴板</string>
+    <string name="digest_exported">已导出：%1$s</string>
+    <string name="digest_failed">整理失败：%1$s</string>
+
+    <string name="settings_llm">在线整理（可选）</string>
+    <string name="settings_llm_desc">不填就是纯离线。填了 API Key 后，可以用大模型把转写整理成更通顺的知识点笔记（整理时才把文字发给该服务商，录音永远不上传）。兼容 OpenAI 接口，如 DeepSeek、智谱、通义、Kimi。</string>
+    <string name="settings_llm_base">接口地址</string>
+    <string name="settings_llm_key">API Key</string>
+    <string name="settings_llm_model">模型名</string>
+    <string name="settings_llm_test">测试连接</string>
+    <string name="settings_llm_testing">正在测试连接…</string>
+    <string name="settings_llm_ok">连接正常，模型回复：%1$s</string>
+    <string name="settings_llm_fail">连接失败：%1$s</string>
+    <string name="settings_llm_hint">留空 = 完全离线</string>
+    <string name="settings_llm_preset">常用服务商</string>
+    <string name="preset_zhipu">智谱 GLM</string>
+    <string name="preset_deepseek">DeepSeek</string>
+    <string name="preset_kimi">Kimi</string>
+    <string name="preset_qwen">通义千问</string>
+    <string name="preset_filled">已填入 %1$s，还要填写 API Key</string>
+
+    <string name="digest_toc">本页目录（点一下跳过去）</string>
+    <string name="digest_view_rich">切换到排版视图</string>
+    <string name="digest_view_raw">查看 Markdown 源码</string>
+    <string name="digest_mode_rich">排版视图：章节可折叠，时间戳是彩色标签</string>
+    <string name="digest_mode_raw">Markdown 源码：可直接编辑或复制给别人</string>
+    <string name="digest_font">字号</string>
+    <string name="digest_font_now">字号已调到 %1$d%%</string>
+    <string name="digest_status_ai">AI 体系化整理 · %1$s</string>
+    <string name="digest_status_local">本地离线整理 · %1$s</string>
+    <string name="digest_ai_start">AI 正在通读这份转写…</string>
+    <string name="digest_tag_ai">AI 体系化整理</string>
+    <string name="digest_demo_status">示例笔记：只为看排版效果，不会保存</string>
+    <string name="digest_demo_readonly">示例笔记不能整理和导出</string>
+    <string name="settings_preview">排版预览（示例笔记）</string>
+
+    <!-- 悬浮截图 -->
+    <string name="shot_capture">截一张图放进笔记</string>
+    <string name="shot_close">关闭悬浮截图按钮</string>
+    <string name="shot_notif_title">悬浮截图已开启</string>
+    <string name="shot_notif_text">点一下屏幕上的圆钮就能截图</string>
+    <string name="shot_notif_capture">截图</string>
+    <string name="shot_notif_stop">关闭</string>
+    <string name="shot_capturing">正在截图…</string>
+    <string name="shot_saved">已存入《%1$s》</string>
+    <string name="shot_failed">截图失败，确认一下屏幕是亮着的</string>
+    <string name="shot_analyzing">AI 正在看图…</string>
+    <string name="shot_analyzed">图片已分析，要点写进笔记了</string>
+    <string name="shot_analyze_failed">图片已保存，但 AI 分析失败：%1$s</string>
+    <string name="shot_need_key">图片已保存。想自动分析，先在设置里填 API Key</string>
+    <string name="shot_need_overlay">缺少悬浮窗权限，去设置里打开「显示在其他应用上层」</string>
+    <string name="shot_projection_lost">屏幕截图授权已结束，悬浮按钮已关闭</string>
+
+    <string name="settings_shot">悬浮截图</string>
+    <string name="settings_shot_desc">开启后屏幕上会出现一个能随便拖动的圆钮，点一下就把当前画面截下来放进笔记 —— 看网课视频、直播、PDF 的时候特别顺手。需要先给「录制屏幕」授权，权限只用来截图，不会外传。</string>
+    <string name="settings_shot_switch">开启悬浮截图按钮</string>
+    <string name="settings_shot_on">悬浮截图正在运行，点屏幕上的圆钮截图</string>
+    <string name="settings_shot_off">已关闭悬浮截图</string>
+    <string name="settings_shot_need_float">请先允许「显示在其他应用上层」，再开一次</string>
+    <string name="settings_shot_denied">没有拿到录屏授权，悬浮截图没开启</string>
+    <string name="settings_shot_auto">截图后自动用 AI 分析</string>
+    <string name="settings_shot_auto_desc">用视觉模型读懂课件、板书、图表，把要点写进笔记。需要先填好 API Key，没填也能截图，只是不带说明。</string>
+    <string name="settings_shot_recording">截图放进正在记录的那篇笔记</string>
+    <string name="settings_shot_recording_desc">关掉的话，截图会单独收进当天的「课堂截图」笔记里。</string>
+    <string name="settings_shot_vision">视觉模型</string>
+    <string name="settings_shot_vision_desc">默认 glm-4v-flash：智谱的免费视觉模型，不花钱；并发被限时（429）会自动退避重试。想看得更细可以换 glm-4.6v-flash（也是免费，上下文更大）。</string>
+    <string name="preset_vision_flash">智谱 glm-4v-flash（免费）</string>
+    <string name="preset_vision_flash_new">智谱 glm-4.6v-flash（免费）</string>
+    <string name="preset_vision_qwen">通义 qwen-vl-max</string>
+    <string name="preset_vision_moonshot">Kimi moonshot-v1-8k-vision-preview</string>
+    <string name="settings_shot_preset">常用视觉模型</string>
+
+    <!-- 笔记里的截图 -->
+    <string name="entry_shot">截图</string>
+    <string name="entry_shot_analyze">AI 分析这张图</string>
+    <string name="entry_shot_reanalyze">重新分析</string>
+    <string name="entry_shot_analyzing">正在分析…</string>
+    <string name="entry_shot_no_caption">还没有说明</string>
+    <string name="entry_shot_open">点一下看大图</string>
+    <string name="entry_shot_edit_hint">（文字编辑框里没有截图：保存后这 %1$d 张图会按时间留在原位）</string>
+
+    <string name="shot_title">课堂截图</string>
+    <string name="shot_menu_analyze">AI 分析</string>
+    <string name="shot_menu_edit">编辑说明</string>
+    <string name="shot_menu_copy">复制说明</string>
+    <string name="shot_menu_share">分享这张图</string>
+    <string name="shot_menu_delete">删除这张图</string>
+    <string name="shot_deleted">已删除这张截图</string>
+    <string name="shot_delete_msg">这张图会从笔记里删掉，确定吗？</string>
+    <string name="shot_caption_saved">说明已保存</string>
+    <string name="shot_copied">说明已复制</string>
+    <string name="shot_missing">图片找不到了</string>
+    <string name="digest_shots">本课图示</string>
+</resources>

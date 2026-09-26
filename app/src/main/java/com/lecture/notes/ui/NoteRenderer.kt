@@ -1,0 +1,659 @@
+package com.lecture.notes.ui
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.ReplacementSpan
+import android.text.style.StyleSpan
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
+import com.google.android.material.color.MaterialColors
+import com.lecture.notes.R
+import com.lecture.notes.util.MiniMarkdown
+import com.lecture.notes.util.MiniMarkdown.Block
+import com.lecture.notes.util.MiniMarkdown.Callout
+import com.lecture.notes.util.MiniMarkdown.Span
+import com.lecture.notes.util.Thumbs
+import kotlin.math.max
+
+/**
+ * 把整理稿渲染成「排版好」的一页笔记：
+ *
+ * - `#`  课程标题（带品牌色下划线）
+ * - `##` 章节：序号徽标 + 可点击折叠 / 展开，小节头部自动进目录
+ * - `###` 子知识点：品牌色小圆点
+ * - `-`  要点：圆点项目符号（`★` 自动换成星标），`[mm:ss]` 与行内代码渲染成彩色胶囊
+ * - `>`  提示块：左侧彩条卡片（重点 = 橙、总结 = 绿、提示 = 蓝）
+ * - 表格：表头底色 + 斑马纹 + 圆角卡片，手机上也能看清
+ * - 关键词行：胶囊标签自动换行
+ *
+ * 本地整理和 AI 整理产出的都是同一套 Markdown，所以共用这套排版。
+ */
+class NoteRenderer(context: Context) {
+
+    private val ctx = context
+
+    /** 字号倍率，详情页的「字号」菜单直接改它。 */
+    var scale = 1f
+
+    /** 目录卡片的标题，由界面从字符串资源传进来。 */
+    var tocTitle = "本页目录（点一下跳过去）"
+
+    /** 截图所在的笔记目录：渲染 `![图示](shots/x.jpg)` 时从这里取图。 */
+    var imageDir: java.io.File? = null
+
+    /** 点图放大看。参数是相对路径。 */
+    var onImageClick: ((String) -> Unit)? = null
+
+    private val surface = mc(com.google.android.material.R.attr.colorSurface, 0xFFFFFFFF.toInt())
+    private val onSurface = mc(com.google.android.material.R.attr.colorOnSurface, 0xFF1B1B1F.toInt())
+    private val onVariant = mc(com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF55565E.toInt())
+    private val surfaceVar = mc(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE3E3EA.toInt())
+    private val outline = mc(com.google.android.material.R.attr.colorOutline, 0xFF9A9AA5.toInt())
+    private val primary = ContextCompat.getColor(ctx, R.color.brand)
+    private val starColor = ContextCompat.getColor(ctx, R.color.star)
+    private val okColor = 0xFF2E9E6B.toInt()
+    private val isDark = ColorUtils.calculateLuminance(surface) < 0.5
+
+    // ------------------------------------------------------------------ 对外
+
+    /**
+     * 把 [markdown] 渲染进 [container]。
+     * [scrollParent] 传入包裹 container 的 ScrollView，点击目录可直接滚过去。
+     */
+    fun render(container: LinearLayout, markdown: String, scrollParent: View? = null) {
+        container.removeAllViews()
+        val blocks = MiniMarkdown.parse(markdown)
+        val toc = ArrayList<Pair<String, View>>()
+        var section = 0
+        var i = 0
+
+        while (i < blocks.size) {
+            val b = blocks[i]
+            if (b is Block.Heading && b.level == 1) {
+                container.addView(titleView(b.text))
+                i++
+                continue
+            }
+            if (b is Block.Heading && b.level == 2) {
+                section++
+                val (_, title) = MiniMarkdown.splitOrdinal(b.text)
+                val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+                val wrap = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(sectionHeader(section, title, body))
+                    addView(body)
+                }
+                container.addView(wrap)
+                toc.add(title to wrap)
+                i++
+                while (i < blocks.size) {
+                    val n = blocks[i]
+                    if (n is Block.Heading && n.level <= 2) break
+                    addBlock(body, n)
+                    i++
+                }
+                continue
+            }
+            addBlock(container, b)
+            i++
+        }
+
+        if (toc.size >= 3) container.addView(tocCard(toc, scrollParent), 0)
+    }
+
+    // ------------------------------------------------------------------ 标题
+
+    private fun titleView(text: String): View {
+        val box = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6f), 0, dp(4f))
+        }
+        val title = tv(21f, onSurface, true).apply {
+            this.text = rich(text)
+            setLineSpacing(dp(3f).toFloat(), 1f)
+        }
+        val rule = View(ctx).apply {
+            background = roundBg(primary, 2f)
+            layoutParams = LinearLayout.LayoutParams(dp(46f), dp(4f)).apply { topMargin = dp(8f) }
+        }
+        box.addView(title)
+        box.addView(rule)
+        return box
+    }
+
+    private fun sectionHeader(num: Int, title: String, body: LinearLayout): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(16f), 0, dp(8f))
+            isClickable = true
+            val out = TypedValue()
+            if (ctx.theme.resolveAttribute(android.R.attr.selectableItemBackground, out, true)) {
+                setBackgroundResource(out.resourceId)
+            }
+        }
+        val badge = TextView(ctx).apply {
+            text = num.toString()
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f * scale)
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = roundBg(primary, 7f)
+            includeFontPadding = false
+        }
+        val label = tv(17.5f, onSurface, true).apply {
+            this.text = title
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginStart = dp(10f) }
+        }
+        val chev = tv(12f, onVariant).apply {
+            text = "▾"
+            layoutParams = LinearLayout.LayoutParams(dp(20f), ViewGroup.LayoutParams.WRAP_CONTENT)
+            gravity = Gravity.END
+        }
+        row.addView(badge, LinearLayout.LayoutParams(dp(22f), dp(22f)))
+        row.addView(label)
+        row.addView(chev)
+        row.setOnClickListener {
+            val collapsed = body.visibility == View.VISIBLE
+            body.visibility = if (collapsed) View.GONE else View.VISIBLE
+            chev.text = if (collapsed) "▸" else "▾"
+        }
+        return row
+    }
+
+    private fun subHeading(text: String, level: Int): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(if (level == 3) 14f else 10f), 0, dp(4f))
+        }
+        if (level == 3) {
+            val dot = View(ctx).apply { background = roundBg(primary, 3f) }
+            row.addView(dot, LinearLayout.LayoutParams(dp(6f), dp(6f)).apply {
+                marginStart = dp(2f)
+                marginEnd = dp(8f)
+                topMargin = dp(9f)
+            })
+        }
+        val t = tv(if (level == 3) 15.5f else 14.5f, if (level == 3) onSurface else onVariant, true).apply {
+            this.text = rich(text)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        row.addView(t)
+        return row
+    }
+
+    // ------------------------------------------------------------------ 块
+
+    private fun addBlock(parent: LinearLayout, b: Block) {
+        when (b) {
+            is Block.Heading -> parent.addView(subHeading(b.text, b.level))
+            is Block.Para -> parent.addView(paraView(b.text))
+            is Block.Bullet -> parent.addView(bulletRow(b.text, b.depth, null))
+            is Block.Ordered -> parent.addView(bulletRow(b.text, b.depth, b.marker))
+            is Block.Quote -> parent.addView(quoteView(b.text, b.kind))
+            is Block.Table -> parent.addView(tableView(b))
+            is Block.Code -> parent.addView(codeView(b.lines))
+            is Block.Chips -> parent.addView(chipsView(b.items))
+            is Block.Image -> parent.addView(imageView(b))
+            Block.Rule -> parent.addView(ruleView())
+        }
+    }
+
+    /** 整理稿里的截图：圆角卡片 + 说明；点一下交给界面放大看。 */
+    private fun imageView(b: Block.Image): View {
+        val box = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6f), 0, dp(6f))
+        }
+        val iv = android.widget.ImageView(ctx).apply {
+            adjustViewBounds = true
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            background = roundBg(surfaceVar, 12f)
+            minimumHeight = dp(110f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val file = imageDir?.let { java.io.File(it, b.src) }
+        if (file != null && file.exists()) {
+            Thumbs.load(file, 1100, iv, b.src)
+            iv.isClickable = true
+            iv.setOnClickListener { onImageClick?.invoke(b.src) }
+        }
+        box.addView(iv)
+        if (b.alt.isNotBlank()) {
+            box.addView(tv(12.5f, onVariant).apply {
+                text = rich(b.alt)
+                setPadding(0, dp(6f), 0, 0)
+            })
+        }
+        return box
+    }
+
+    private fun paraView(text: String): View = tv(15f, onSurface).apply {
+        this.text = rich(text)
+        setLineSpacing(dp(4f).toFloat(), 1f)
+        setPadding(0, dp(4f), 0, dp(4f))
+    }
+
+    private fun bulletRow(text: String, depth: Int, marker: String?): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(2f), 0, dp(2f))
+        }
+        val body = text.trimStart().removePrefix("★").trim()
+        val starred = text.trimStart().startsWith("★")
+        val sizeSp = 15f - depth * 0.4f
+        val glyph = tv(if (starred) 13f else 14f, if (starred) starColor else primary, true).apply {
+            this.text = when {
+                starred -> "★"
+                marker != null -> "$marker."
+                else -> if (depth == 0) "•" else "◦"
+            }
+            includeFontPadding = false
+            gravity = if (marker != null) Gravity.END else Gravity.CENTER_HORIZONTAL
+        }
+        glyph.layoutParams = LinearLayout.LayoutParams(if (marker != null) dp(22f) else dp(15f), ViewGroup.LayoutParams.WRAP_CONTENT)
+        val content = tv(sizeSp, onSurface).apply {
+            this.text = rich(body)
+            setLineSpacing(dp(3f).toFloat(), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(7f + depth * 14f)
+            }
+        }
+        row.addView(glyph)
+        row.addView(content)
+        return row
+    }
+
+    private fun quoteView(text: String, kind: Callout): View {
+        val accent = when (kind) {
+            Callout.WARN -> starColor
+            Callout.OK -> okColor
+            Callout.INFO -> primary
+        }
+        val card = CalloutCard(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipToOutline = true
+            background = roundBg(blend(accent, 0.10f), 12f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8f)
+                bottomMargin = dp(6f)
+            }
+        }
+        val bar = View(ctx).apply {
+            background = GradientDrawable().apply {
+                setColor(accent)
+                cornerRadii = floatArrayOf(
+                    dp(12f).toFloat(), dp(12f).toFloat(),
+                    0f, 0f, 0f, 0f,
+                    dp(12f).toFloat(), dp(12f).toFloat()
+                )
+            }
+        }
+        val body = tv(14.5f, onSurface).apply {
+            this.text = rich(text)
+            setLineSpacing(dp(4f).toFloat(), 1f)
+            setPadding(dp(12f), dp(11f), dp(13f), dp(11f))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        card.addView(bar, LinearLayout.LayoutParams(dp(4f), ViewGroup.LayoutParams.MATCH_PARENT))
+        card.addView(body)
+        return card
+    }
+
+    private fun tableView(b: Block.Table): View {
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            clipToOutline = true
+            background = roundBg(blend(outline, if (isDark) 0.35f else 0.16f), 12f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10f)
+                bottomMargin = dp(8f)
+            }
+        }
+        val cols = max(b.header.size, b.rows.maxOfOrNull { it.size } ?: 0).coerceAtLeast(1)
+
+        val head = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(blend(primary, if (isDark) 0.18f else 0.10f))
+        }
+        for (c in 0 until cols) {
+            val cell = b.header.getOrNull(c) ?: ""
+            head.addView(cellView(cell, cols, true))
+        }
+        card.addView(head)
+
+        b.rows.forEachIndexed { index, row ->
+            val line = View(ctx).apply { setBackgroundColor(blend(outline, 0.30f)) }
+            card.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, max(1, dp(0.7f))))
+            val r = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                if (index % 2 == 1) setBackgroundColor(blend(primary, if (isDark) 0.07f else 0.035f))
+            }
+            for (c in 0 until cols) r.addView(cellView(row.getOrNull(c) ?: "", cols, false))
+            card.addView(r)
+        }
+        return card
+    }
+
+    private fun cellView(text: String, cols: Int, header: Boolean): View = tv(13.5f, if (header) onSurface else onVariant, header).apply {
+        this.text = rich(text)
+        setLineSpacing(dp(2f).toFloat(), 1f)
+        setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f / cols)
+    }
+
+    private fun codeView(lines: List<String>): View {
+        val box = TextView(ctx).apply {
+            text = lines.joinToString("\n")
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f * scale)
+            setTextColor(onSurface)
+            setBackground(roundBg(blend(onSurface, if (isDark) 0.10f else 0.05f), 10f))
+            setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+            setLineSpacing(dp(3f).toFloat(), 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8f) }
+        }
+        return box
+    }
+
+    private fun chipsView(items: List<String>): View {
+        val flow = FlowLayout(ctx).apply {
+            hGap = dp(7f)
+            vGap = dp(7f)
+            setPadding(0, dp(6f), 0, dp(6f))
+        }
+        for (it in items) {
+            val chip = TextView(ctx).apply {
+                text = it
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f * scale)
+                setTextColor(primary)
+                background = roundBg(blend(primary, if (isDark) 0.22f else 0.12f), 999f)
+                setPadding(dp(12f), dp(4f), dp(12f), dp(4f))
+                includeFontPadding = false
+            }
+            flow.addView(chip)
+        }
+        return flow
+    }
+
+    private fun ruleView(): View = View(ctx).apply {
+        setBackgroundColor(blend(outline, 0.35f))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, max(1, dp(0.7f))
+        ).apply {
+            topMargin = dp(16f)
+            bottomMargin = dp(10f)
+        }
+    }
+
+    // ------------------------------------------------------------------ 目录
+
+    private fun tocCard(items: List<Pair<String, View>>, scrollParent: View?): View {
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            clipToOutline = true
+            background = roundBg(blend(primary, if (isDark) 0.12f else 0.06f), 14f)
+            setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(6f) }
+        }
+        card.addView(tv(12.5f, onVariant, true).apply {
+            text = tocTitle
+            setPadding(0, 0, 0, dp(6f))
+        })
+        items.forEachIndexed { index, (title, target) ->
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                isClickable = true
+                setPadding(0, dp(7f), 0, dp(7f))
+            }
+            row.addView(tv(13f, primary, true).apply {
+                text = (index + 1).toString()
+                layoutParams = LinearLayout.LayoutParams(dp(20f), ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            row.addView(tv(14.5f, onSurface).apply {
+                text = title
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            row.setOnClickListener {
+                (scrollParent as? android.widget.ScrollView)
+                    ?.smoothScrollTo(0, max(0, target.top - dp(10f)))
+            }
+            card.addView(row)
+            if (index < items.size - 1) {
+                card.addView(View(ctx).apply { setBackgroundColor(blend(onSurface, 0.08f)) },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, max(1, dp(0.7f))))
+            }
+        }
+        return card
+    }
+
+    // ------------------------------------------------------------------ 行内
+
+    /** 把整理稿的行内记号变成带样式的文字：加粗、行内代码胶囊、时间戳胶囊、星标。 */
+    private fun rich(text: String): CharSequence {
+        val sb = SpannableStringBuilder()
+        for (s in MiniMarkdown.inline(text)) {
+            val start = sb.length
+            when (s) {
+                is Span.Text -> sb.append(s.text)
+                is Span.Bold -> {
+                    sb.append(s.text)
+                    sb.setSpan(StyleSpan(Typeface.BOLD), start, sb.length, SPAN_FLAG)
+                }
+                is Span.Code -> {
+                    sb.append(s.text)
+                    sb.setSpan(
+                        PillSpan(blend(onSurface, if (isDark) 0.14f else 0.07f), onSurface, true, 0.94f),
+                        start, sb.length, SPAN_FLAG
+                    )
+                }
+                is Span.Time -> {
+                    sb.append(s.text)
+                    sb.setSpan(
+                        PillSpan(blend(primary, if (isDark) 0.28f else 0.16f), primary, true, 0.92f, true),
+                        start, sb.length, SPAN_FLAG
+                    )
+                }
+                Span.Star -> {
+                    sb.append("★")
+                    sb.setSpan(ForegroundColorSpan(starColor), start, sb.length, SPAN_FLAG)
+                    sb.setSpan(StyleSpan(Typeface.BOLD), start, sb.length, SPAN_FLAG)
+                }
+                is Span.Image -> sb.append(s.alt.ifBlank { "[截图]" })
+            }
+        }
+        return sb
+    }
+
+    // ------------------------------------------------------------------ 工具
+
+    private fun tv(sizeSp: Float, color: Int, bold: Boolean = false): TextView =
+        TextView(ctx).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp * scale)
+            setTextColor(color)
+            if (bold) setTypeface(typeface, Typeface.BOLD)
+            includeFontPadding = false
+            setLineSpacing(0f, 1f)
+        }
+
+    private fun dp(v: Float): Int = (v * ctx.resources.displayMetrics.density + 0.5f).toInt()
+
+    private fun mc(attr: Int, fallback: Int): Int = MaterialColors.getColor(ctx, attr, fallback)
+
+    /** 把 [color] 按 [alpha] 叠在页面底色上，得到一个可用的实色。 */
+    private fun blend(color: Int, alpha: Float): Int =
+        ColorUtils.blendARGB(surface, color, alpha.coerceIn(0f, 1f))
+
+    private fun roundBg(color: Int, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+    }
+
+    /** 行内胶囊：圆角底色 + 自己的文字。 */
+    private class PillSpan(
+        private val bg: Int,
+        private val fg: Int,
+        private val mono: Boolean = false,
+        private val sizeScale: Float = 1f,
+        private val bold: Boolean = false
+    ) : ReplacementSpan() {
+
+        private fun styled(base: Paint): Paint = Paint(base).apply {
+            color = fg
+            textSize = base.textSize * sizeScale
+            isFakeBoldText = bold
+            if (mono) typeface = Typeface.MONOSPACE
+        }
+
+        private fun padH(base: Paint): Float = base.textSize * 0.34f
+
+        override fun getSize(
+            paint: Paint,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            fm: Paint.FontMetricsInt?
+        ): Int {
+            val p = styled(paint)
+            if (fm != null) {
+                val m = p.fontMetricsInt
+                fm.ascent = m.ascent - (p.textSize * 0.10f).toInt()
+                fm.descent = m.descent + (p.textSize * 0.10f).toInt()
+                fm.top = fm.ascent
+                fm.bottom = fm.descent
+                fm.leading = 0
+            }
+            return (p.measureText(text, start, end) + padH(paint) * 2f).toInt()
+        }
+
+        override fun draw(
+            canvas: Canvas,
+            text: CharSequence,
+            start: Int,
+            end: Int,
+            x: Float,
+            top: Int,
+            y: Int,
+            bottom: Int,
+            paint: Paint
+        ) {
+            val p = styled(paint)
+            val fm = p.fontMetrics
+            val ph = padH(paint)
+            val left = x
+            val right = x + p.measureText(text, start, end) + ph * 2f
+            val rect = RectF(
+                left,
+                y + fm.ascent - p.textSize * 0.12f,
+                right,
+                y + fm.descent + p.textSize * 0.12f
+            )
+            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bg }
+            val radius = rect.height() / 2f
+            canvas.drawRoundRect(rect, radius, radius, bgPaint)
+            canvas.drawText(text, start, end, left + ph, y.toFloat(), p)
+        }
+    }
+
+    /**
+     * 提示块容器：让左侧彩条始终和卡片一样高。
+     * 普通横向 LinearLayout 里，layout_height=match_parent 的空 View 会被量成 0 高。
+     */
+    private class CalloutCard(context: Context) : LinearLayout(context) {
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            val bar = getChildAt(0) ?: return
+            val body = getChildAt(1) ?: return
+            val w = bar.measuredWidth
+            val h = height
+            if (w <= 0 || h <= 0) return
+            if (bar.measuredHeight != h) {
+                bar.measure(
+                    MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY)
+                )
+            }
+            bar.layout(0, 0, w, h)
+            body.layout(w, 0, width, h)
+        }
+    }
+
+    /** 自动换行的标签容器（关键词胶囊用）。 */
+    private class FlowLayout(context: Context) : ViewGroup(context) {
+
+        var hGap = 0
+        var vGap = 0
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val width = MeasureSpec.getSize(widthMeasureSpec)
+            var x = 0
+            var lineHeight = 0
+            var totalHeight = 0
+            for (i in 0 until childCount) {
+                val child = getChildAt(i)
+                measureChild(child, MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), heightMeasureSpec)
+                val cw = child.measuredWidth
+                val ch = child.measuredHeight
+                if (x > 0 && x + cw > width) {
+                    totalHeight += lineHeight + vGap
+                    x = 0
+                    lineHeight = 0
+                }
+                x += cw + hGap
+                lineHeight = max(lineHeight, ch)
+            }
+            totalHeight += lineHeight
+            setMeasuredDimension(width, totalHeight + paddingTop + paddingBottom)
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val width = measuredWidth - paddingLeft - paddingRight
+            var x = paddingLeft
+            var y = paddingTop
+            var lineHeight = 0
+            for (i in 0 until childCount) {
+                val child = getChildAt(i)
+                val cw = child.measuredWidth
+                val ch = child.measuredHeight
+                if (x > paddingLeft && x + cw > paddingLeft + width) {
+                    x = paddingLeft
+                    y += lineHeight + vGap
+                    lineHeight = 0
+                }
+                child.layout(x, y, x + cw, y + ch)
+                x += cw + hGap
+                lineHeight = max(lineHeight, ch)
+            }
+        }
+    }
+
+    companion object {
+        private const val SPAN_FLAG = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+    }
+}

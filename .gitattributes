@@ -1,0 +1,16 @@
+# 仓库里统一存 LF；Windows 专用脚本保持 CRLF，避免 gradlew / *.sh 在 Linux/macOS 上跑不起来
+* text=auto
+*.sh    text eol=lf
+gradlew text eol=lf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制不做转换
+*.aar   binary
+*.jar   binary
+*.onnx  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.jks   binary
+*.keystore binary
