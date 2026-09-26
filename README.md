@@ -238,8 +238,10 @@ app/src/main/java/com/lecture/notes/
 17. 新增**视觉模型分析**（`LlmDigest.analyzeImage`）：图片压到长边 1280 再转 base64，
     按 OpenAI 兼容的多模态格式（`content` 数组 + `image_url`）发出去，换模型只改一个输入框；
     默认 `glm-4v-flash`（智谱免费视觉模型）。
-18. 整理链路打通图片：`NoteStore.shotsSection()` 生成「本课图示」小节，本地整理和 AI 整理都会带上；
-    `MiniMarkdown` 新增 `Block.Image`，`NoteRenderer` 画成圆角卡片（点一下放大）；
+18. 整理稿打通图片：截图按时间戳**插进它所在的小节**（本地整理按小节的起止时间归位，
+    AI 整理则把 `[[IMGn]]` 记号交给模型挑位置、再由 App 还原成 `![…](shots/x.jpg)`，
+    模型漏放的图兜底收进末尾的「本课图示」）；`MiniMarkdown` 新增 `Block.Image`，
+    `NoteRenderer` 画成圆角卡片（点一下放大）；
     导出 HTML 时把图片内嵌成 base64 单文件，导出 Markdown 时把 md 和 `shots/` 图一起放进同名子目录。
 19. 存储并发加固：所有对 `lines.jsonl` 的「读 → 改 → 写」串行化。
     截图是录音过程中插进来的，AI 分析完还要回写说明，没有这把锁就可能把刚识别出的一句话盖掉。
