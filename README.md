@@ -12,6 +12,15 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-1.9-7F52FF?logo=kotlin&logoColor=white)
 ![识别离线](https://img.shields.io/badge/%E8%AF%AD%E9%9F%B3%E8%AF%86%E5%88%AB-100%25%20%E7%A6%BB%E7%BA%BF-4353E8)
 
+## 下载
+
+不想自己编译的话，直接装打好的 APK：[**最新 Release**](https://github.com/Eternalhope-li/Online-Class-Notes/releases/latest)
+—— APK 里**已经内置识别模型**（约 285 MB），装完就能离线用，不需要再下别的东西。
+
+适用 Android 7.0（API 24）及以上，arm64-v8a / armeabi-v7a。用的是自签名证书，第一次装需要在系统里允许「安装未知来源应用」。
+
+想自己编译、改代码，见下面的[快速开始](#快速开始)。
+
 ## 功能
 
 | 功能 | 说明 |
@@ -219,6 +228,8 @@ app/src/main/java/com/lecture/notes/
 - **截图默认只存在手机里**：只有开了「截图后自动用 AI 分析」并真的分析时，才会把**那张**压缩到长边 1280 的图发出去换说明，随时可以在设置里关掉。
 - 网络请求只有上面两类，App 不会在后台偷偷联网。
 - 权限只用到：麦克风、录音（内录）、悬浮窗（悬浮截图圆钮）、通知（前台服务）。
+
+隐私相关的设置、数据存在哪、什么情况下会联网、权限都用在哪、怎么自己核对代码，见 [**PRIVACY.md**](PRIVACY.md)。
 
 ## 已知限制
 
