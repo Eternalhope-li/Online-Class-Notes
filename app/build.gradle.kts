@@ -27,8 +27,8 @@ android {
         applicationId = "com.lecture.notes"
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.5.0"
+        versionCode = 10
+        versionName = "1.5.1"
         ndk {
             abiFilters += if (emuBuild) listOf("x86_64") else listOf("arm64-v8a", "armeabi-v7a")
         }

@@ -170,6 +170,9 @@ class CaptureService : Service() {
                 ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 lastStoppedNoteId = note?.id
+                // 圆钮要是这次记录顺手挂出来的，录完就收回去 —— 否则它会一直飘着，
+                // 在笔记页左上角正好压住标题。设置里手动开的那个不受影响。
+                if (Prefs.shotBySession) ShotService.stop(this)
             }
         }, "session-stop").start()
     }

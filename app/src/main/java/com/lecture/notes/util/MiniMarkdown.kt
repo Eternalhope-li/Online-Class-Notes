@@ -54,10 +54,52 @@ object MiniMarkdown {
     private val INLINE_IMAGE_RE = Regex("!\\[(.*?)]\\((.*?)\\)")
 
     // ------------------------------------------------------------------ 解析
+    /**
+     * 把夹在要点 / 段落中间的截图提到单独一行。
+     *
+     * 模型整理时经常写成 `- **图示**：![课堂截图 00:39](shots/x.jpg) [图示] - 窗口显示 Error`：
+     * 图片不在自己那一行，解析层就只把它当一段文字，图片整张丢掉 —— 用户看到的就是「图示没有」。
+     * 这里统一提行，顺手擦掉模型留下的「图示」「[图示]」这类占位词。代码块和表格行不动。
+     */
+    fun hoistImages(md: String): String {
+        if (!md.contains("![")) return md
+        val src = md.replace("\r\n", "\n").replace('\r', '\n')
+        val out = StringBuilder(src.length + 32)
+        var fence = false
+        for (line in src.split('\n')) {
+            if (line.trimStart().startsWith("```")) {
+                fence = !fence
+                out.append(line).append('\n')
+                continue
+            }
+            if (fence || !INLINE_IMAGE_RE.containsMatchIn(line) || line.trimStart().startsWith("|")) {
+                out.append(line).append('\n')
+                continue
+            }
+            val imgs = INLINE_IMAGE_RE.findAll(line).map { it.value }.toList()
+            val text = tidyImageLabel(INLINE_IMAGE_RE.replace(line, ""))
+            if (text.isNotBlank()) out.append(text).append('\n')
+            for (g in imgs) out.append('\n').append(g).append('\n')
+        }
+        return out.toString().replace(Regex("\\n{3,}"), "\n\n")
+    }
+
+    /** 图片提行后剩下的残渣：「**图示**：」「[图示]」「- - 」。 */
+    private fun tidyImageLabel(s: String): String {
+        var t = s
+            .replace(Regex("\\*\\*\\s*图\\s*示\\s*\\*\\*\\s*[:：]?\\s*"), "")
+            .replace(Regex("\\[\\s*图\\s*示\\s*]\\s*"), "")
+            .replace(Regex("图\\s*示\\s*[:：]\\s*"), "")
+            .replace(Regex("[ \t]{2,}"), " ")
+        t = t.replace(Regex("^(\\s*[-*+]\\s+)\\s*[-*+]\\s+"), "$1")
+        t = t.replace(Regex("([:：])\\s*$"), "")
+        t = t.trim()
+        return if (t == "-" || t == "*" || t == "+") "" else t
+    }
 
     fun parse(md: String): List<Block> {
         val out = ArrayList<Block>()
-        val lines = md.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val lines = hoistImages(md).split('\n')
         val para = StringBuilder()
 
         fun flushPara() {
@@ -443,6 +485,8 @@ object MiniMarkdown {
                 }
                 is Block.Code -> b.lines.forEach { sb.append(it).append('\n') }
                 is Block.Chips -> sb.append(b.items.joinToString(" ")).append('\n')
+                // 纯文本兜底里图片只留一句说明：复制 / 分享给不支持 HTML 的地方时，
+                // 一串 ![]() 反而是噪音（HTML 那一路是带真图的）
                 is Block.Image -> sb.append("[图片] ").append(inlinePlain(b.alt)).append('\n')
                 Block.Rule -> sb.append("――――――――\n")
             }

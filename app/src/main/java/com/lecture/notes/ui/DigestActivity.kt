@@ -231,8 +231,11 @@ class DigestActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val saved = withContext(Dispatchers.IO) { NoteStore.readDigest(n.id) }
             if (saved.isNullOrBlank()) return@launch
+            val stale = withContext(Dispatchers.IO) { NoteStore.digestStale(n.id) }
             isAi = saved.contains(getString(R.string.digest_tag_ai))
-            binding.staleBar.visibility = View.GONE
+            // 整理稿刚写完时通常已经不落后了；但截图的 AI 说明是之后回写的，
+            // 真比整理稿新还是得提示 —— 现算一次，别把上一轮的状态留在屏幕上
+            binding.staleBar.visibility = if (stale) View.VISIBLE else View.GONE
             show(saved, status)
         }
     }
@@ -342,6 +345,8 @@ class DigestActivity : AppCompatActivity() {
                 else -> getString(R.string.digest_status_local, status)
             }
         }
+        // 已经有 AI 整理稿时按钮改叫「重新整理一遍」，不然用户以为要重新生成一份
+        if (!busy) binding.btnAi.text = getString(aiButtonLabel())
     }
 
     /** 整理稿里点一张截图 → 打开大图页。 */
@@ -368,10 +373,17 @@ class DigestActivity : AppCompatActivity() {
             binding.progress.isIndeterminate = true
         }
         if (msg != null) binding.status.text = msg
-        binding.btnAi.text = getString(if (b) R.string.digest_ai_cancel else R.string.digest_ai_do)
+        binding.btnAi.text = getString(aiButtonLabel())
         binding.toolbar.menu.findItem(R.id.action_ai)?.isEnabled = !b
         binding.toolbar.menu.findItem(R.id.action_rebuild)?.isEnabled = !b
         binding.toolbar.menu.findItem(R.id.action_export)?.isEnabled = !b
+    }
+
+    /** 顶部按钮的文案：整理中 = 取消；已经有 AI 整理稿 = 再整理一遍；否则 = 开始整理。 */
+    private fun aiButtonLabel(): Int = when {
+        busy -> R.string.digest_ai_cancel
+        isAi -> R.string.digest_ai_redo
+        else -> R.string.digest_ai_do
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

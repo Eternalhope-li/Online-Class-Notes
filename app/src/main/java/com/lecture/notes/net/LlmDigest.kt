@@ -5,6 +5,7 @@ import com.lecture.notes.data.Note
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.util.Formats
 import com.lecture.notes.util.ImageUtil
+import com.lecture.notes.util.MiniMarkdown
 import com.lecture.notes.util.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -134,7 +135,9 @@ object LlmDigest {
                 throw t
             }
         }
-        embedImages(body, note, appendMissing = true)
+        // 模型爱把图塞在要点行中间（`- **图示**：![…](shots/x.jpg) 说明`），落盘前先提行：
+        // 解析层只认独占一行的图片，不提行整张图就没了；导出的 .md / .html 也因此是干净的
+        MiniMarkdown.hoistImages(embedImages(body, note, appendMissing = true))
     }
 
     /** 长课：各段并行出素材卡，再把这些卡片合成一版终稿。 */

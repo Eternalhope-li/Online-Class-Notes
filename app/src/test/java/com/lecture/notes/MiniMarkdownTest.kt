@@ -141,26 +141,44 @@ class MiniMarkdownTest {
         assertTrue(MiniMarkdown.plain(md).isNotBlank())
     }
 
-    /** 截图夹在要点行中间时（转写导出就是这种形状），要渲染成真的图片，不能把内容当文本吐出来。 */
+    /** 截图夹在要点行中间时（模型整理经常这么写），要渲染成真的图片，不能把内容当文本吐出来。 */
     @Test
     fun inlineShotInsideBulletBecomesImageTag() {
         val html = MiniMarkdown.toHtml("- `[00:27]` ![图示](shots/a.jpg)", "t")
-        assertTrue(html.contains("<img class=\"shot-inline\" src=\"shots/a.jpg\""))
+        assertTrue(html, html.contains("<img src=\"shots/a.jpg\""))
         assertFalse("行内图片不该还留着 Markdown 记号", html.contains("![图示]"))
+        assertTrue("要点本身要留着", html.contains("[00:27]"))
+    }
+
+    /** 模型爱把图夹在要点行中间：提行之后图才不会被解析层丢掉，占位词也要擦干净。 */
+    @Test
+    fun hoistImagesPullsInlineShotOntoItsOwnLine() {
+        val md = "- **图示**：![课堂截图 00:39](shots/x.jpg) [图示] - 终端窗口显示 Error。"
+        val out = MiniMarkdown.hoistImages(md)
+        val lines = out.trim().split('\n').map { it.trim() }
+        assertTrue(out, lines.any { it == "![课堂截图 00:39](shots/x.jpg)" })
+        assertFalse(out, out.contains("**图示**") || out.contains("[图示]"))
+        assertTrue(out, out.contains("终端窗口显示 Error。"))
+        assertTrue("代码块里的记号不动", MiniMarkdown.hoistImages("```\n![x](y)\n```").contains("![x](y)"))
+        assertTrue("已经是单独一行的图不用重复搬", MiniMarkdown.hoistImages("![x](y)").trim() == "![x](y)")
     }
 
     @Test
     fun inlineShotWithDataUrlIsStillAnImage() {
         val url = ImageUtil.DATA_HEAD + "AAAA"
         val html = MiniMarkdown.toHtml("- `[00:12]` ![图示]($url)", "t")
-        assertTrue(html.contains("<img class=\"shot-inline\""))
+        assertTrue(html, html.contains("<img src=\"" + url + "\""))
     }
 
-    /** 纯文本兜底（复制 / 分享）要保持原来的 Markdown 记号，不能退化成裸链接或 base64。 */
+    /** 纯文本兜底（复制 / 分享）：要点和图片说明都要留住，不能吐成裸链接或一坨 base64。 */
     @Test
-    fun inlineShotKeepsMarkdownInPlainText() {
-        val md = "- `[00:27]` ![图示](shots/a.jpg)"
-        assertTrue(MiniMarkdown.plain(md).contains("![图示](shots/a.jpg)"))
+    fun plainTextKeepsBulletAndShotCaption() {
+        val md = "- `[00:27]` ![课堂截图 00:27](shots/a.jpg)"
+        val plain = MiniMarkdown.plain(md)
+        assertTrue(plain, plain.contains("[00:27]"))
+        assertTrue(plain, plain.contains("[图片]") && plain.contains("课堂截图 00:27"))
+        assertFalse(plain, plain.contains("base64") || plain.contains("!["))
+        // 行内片段那一路（表格单元格等）仍然保留 Markdown 记号
         assertTrue(MiniMarkdown.inlinePlain("![图示](shots/a.jpg)").contains("![图示](shots/a.jpg)"))
     }
 }

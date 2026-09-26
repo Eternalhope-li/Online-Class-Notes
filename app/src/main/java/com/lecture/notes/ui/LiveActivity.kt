@@ -40,7 +40,7 @@ class LiveActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
-                ShotService.start(this, result.resultCode, data)
+                ShotService.start(this, result.resultCode, data, bySession = true)
                 binding.btnShot.postDelayed({ ShotService.capture(this) }, 400)
             } else {
                 toast(getString(R.string.toast_projection_denied))

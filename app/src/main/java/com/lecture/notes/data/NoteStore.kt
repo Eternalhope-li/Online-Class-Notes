@@ -1,5 +1,6 @@
 package com.lecture.notes.data
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.os.Build
@@ -307,20 +308,24 @@ object NoteStore {
         val out = ArrayList<Meta>()
         for (d in dirs) {
             if (!d.isDirectory) continue
-            val j = readMeta(d.name) ?: continue
+            // 计数按磁盘上的真实内容现算，不读 meta.json 里缓存的那份。
+            // 录音过程中插进来的截图是另一条写入路径，历史版本也会留下旧值，
+            // 结果就是卡片写「5 句」而正文有 6 句、明明有截图却不显示「图 N」。
+            // 列表是打开 App 看到的第一屏，多读一次文件也值。
+            val n = load(d.name) ?: continue
             out.add(
                 Meta(
-                    id = j.optString("id", d.name),
-                    title = j.optString("title", "网课笔记"),
-                    createdAt = j.optLong("createdAt"),
-                    durationMs = j.optLong("durationMs"),
-                    source = j.optString("source", "mic"),
-                    count = j.optInt("count"),
-                    chars = j.optInt("chars"),
-                    stars = j.optInt("stars"),
-                    preview = j.optString("preview"),
-                    images = j.optInt("imgs"),
-                    hasDigest = hasDigest(j.optString("id", d.name))
+                    id = n.id,
+                    title = n.title,
+                    createdAt = n.createdAt,
+                    durationMs = n.durationMs,
+                    source = n.source,
+                    count = n.entries.size,
+                    chars = n.charCount,
+                    stars = n.starCount,
+                    preview = n.preview,
+                    images = n.imageCount,
+                    hasDigest = hasDigest(n.id)
                 )
             )
         }
@@ -546,6 +551,11 @@ object NoteStore {
                             Environment.DIRECTORY_DOWNLOADS + "/" + folder + "/shots"
                         )
                     }
+                    deleteExisting(
+                        ctx,
+                        Environment.DIRECTORY_DOWNLOADS + "/" + folder + "/shots",
+                        target
+                    )
                     val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                         ?: continue
                     ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
@@ -614,6 +624,8 @@ object NoteStore {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, rel)
             }
             val resolver = ctx.contentResolver
+            // 先清掉上次导出的同名文件，别让系统自动改成「xxx (1).md」
+            deleteExisting(ctx, rel, fileName)
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: throw IOException("系统拒绝创建文件")
             resolver.openOutputStream(uri)?.use { it.write(body.toByteArray(Charsets.UTF_8)) }
@@ -626,6 +638,40 @@ object NoteStore {
         val f = File(dir, fileName)
         f.writeText(body, Charsets.UTF_8)
         return f.absolutePath
+    }
+
+    /**
+     * 同一个位置已经导过一次就先把旧的删掉。
+     *
+     * MediaStore 遇到重名不会覆盖，而是自动改名成「xxx (1).md」「xxx (2).md」——
+     * 同一篇笔记导出几次，「下载」里就多几份几乎一样的文件，看着像垃圾。
+     * 这里按「相对目录 + 文件名」精确匹配，只删自己上次导出的那一份。
+     */
+    private fun deleteExisting(ctx: Context, rel: String, name: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        val want = rel.trimEnd('/')
+        try {
+            ctx.contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.RELATIVE_PATH),
+                MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                arrayOf(name),
+                null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val path = c.getString(1)?.trimEnd('/') ?: continue
+                    if (path != want) continue
+                    val uri = ContentUris.withAppendedId(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)
+                    )
+                    try {
+                        ctx.contentResolver.delete(uri, null, null)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
     }
     /** 全文搜索：先匹配标题和开头，再逐行扫文件，速度够快也够准。 */
     fun search(query: String): List<Meta> {

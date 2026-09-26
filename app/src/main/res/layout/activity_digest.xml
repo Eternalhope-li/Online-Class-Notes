@@ -9,7 +9,7 @@
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:title="@string/digest_title"
+        app:title="@string/digest_title"
         app:menu="@menu/digest"
         app:navigationIconTint="?attr/colorOnSurface" />
 

@@ -102,8 +102,8 @@ class ExportTest {
         val n = NoteStore.load(note.id)!!
 
         val html = File(NoteStore.exportHtml(ctx, n, null)).readText(Charsets.UTF_8)
-        assertTrue("行内截图要渲染成 <img>", html.contains("<img class=\"shot-inline\""))
-        assertFalse("Markdown 图片记号不该漏进正文", html.contains("![图示]"))
+        assertTrue("行内截图要渲染成 <img>", html.contains("<img src=\"" + ImageUtil.DATA_HEAD))
+        assertFalse("Markdown 图片记号不该漏进正文", html.contains("!["))
     }
 
     @Test

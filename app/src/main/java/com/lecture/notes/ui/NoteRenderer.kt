@@ -170,7 +170,9 @@ class NoteRenderer(context: Context) {
             }
         }
         val label = tv(17.5f, onSurface, true).apply {
-            this.text = title
+            // 标题里也可能夹着 `00:12-00:31` 这类行内代码 / 时间戳，交给 rich() 画成胶囊，
+            // 不然反引号会原样露在标题上
+            this.text = rich(title)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 .apply { marginStart = dp(10f) }
         }
@@ -179,7 +181,12 @@ class NoteRenderer(context: Context) {
             layoutParams = LinearLayout.LayoutParams(dp(20f), ViewGroup.LayoutParams.WRAP_CONTENT)
             gravity = Gravity.END
         }
-        row.addView(badgeView, LinearLayout.LayoutParams(dp(22f), dp(22f)))
+        // 有序号时是装数字的圆徽标，没序号时是那根竖条 —— 尺寸得分开给，别把竖条撑成大方块
+        row.addView(
+            badgeView,
+            if (badge == null) LinearLayout.LayoutParams(dp(4f), dp(18f))
+            else LinearLayout.LayoutParams(dp(22f), dp(22f))
+        )
         row.addView(label)
         row.addView(chev)
         row.setOnClickListener {
@@ -516,6 +523,7 @@ class NoteRenderer(context: Context) {
         if (t.isEmpty() || t.all { it.isDigit() }) return t
         val d = "零一二三四五六七八九"
         return when {
+            t.length == 1 && t[0] in d -> d.indexOf(t[0]).toString()
             t == "十" -> "10"
             t.length == 2 && t[0] == '十' && t[1] in d -> "1" + d.indexOf(t[1])
             t.length == 2 && t[1] == '十' && t[0] in d -> d.indexOf(t[0]).toString() + "0"

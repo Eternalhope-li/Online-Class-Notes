@@ -97,6 +97,7 @@ class ShotService : Service() {
         // 只退掉自己的登记；录音还在用同一个授权的话不能停，否则会把录音掐断
         ShotGate.release(ShotGate.OWNER_SHOT)
         Prefs.shotFloat = false
+        Prefs.shotBySession = false
         super.onDestroy()
     }
 
@@ -128,6 +129,11 @@ class ShotService : Service() {
         }
 
         started = true
+        // 记下这次圆钮的来历：跟着记录挂出来的，记录一结束就收回去；
+        // 设置里手动开的（没带这个标记）留着不动
+        if (intent.hasExtra(EXTRA_BY_SESSION)) {
+            Prefs.shotBySession = intent.getBooleanExtra(EXTRA_BY_SESSION, false)
+        }
         startForegroundCompat()
 
         val p = if (shared != null) {
@@ -178,6 +184,7 @@ class ShotService : Service() {
 
     private fun stopEverything() {
         Prefs.shotFloat = false
+        Prefs.shotBySession = false
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -490,23 +497,27 @@ class ShotService : Service() {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_REUSE_PROJECTION = "reuse_projection"
+        /** 这次圆钮是「跟着记录挂出来」的：记录结束就自动收回去。 */
+        const val EXTRA_BY_SESSION = "by_session"
 
         /** 藏起自己之后等一小会儿再抓，给系统留出重新合成的两帧。 */
         private const val HIDE_BEFORE_GRAB_MS = 140L
 
-        fun start(ctx: Context, resultCode: Int, data: Intent) {
+        fun start(ctx: Context, resultCode: Int, data: Intent, bySession: Boolean? = null) {
             val intent = Intent(ctx, ShotService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
+            if (bySession != null) intent.putExtra(EXTRA_BY_SESSION, bySession)
             androidx.core.content.ContextCompat.startForegroundService(ctx, intent)
         }
 
         /** 复用 [ShotGate] 里已有的录屏授权（录音在用那个），不重复弹授权框。 */
-        fun start(ctx: Context) {
+        fun start(ctx: Context, bySession: Boolean? = null) {
             val intent = Intent(ctx, ShotService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_REUSE_PROJECTION, true)
+            if (bySession != null) intent.putExtra(EXTRA_BY_SESSION, bySession)
             androidx.core.content.ContextCompat.startForegroundService(ctx, intent)
         }
 

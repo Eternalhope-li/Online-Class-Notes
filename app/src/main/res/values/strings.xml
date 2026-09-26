@@ -102,6 +102,7 @@
     <string name="digest_ai_loading">AI 正在整理（第 %1$d/%2$d 段 · %3$s）…</string>
     <string name="digest_ai_need_key">还没配置 API Key，去「设置 → 在线整理」填一个就能用</string>
     <string name="digest_ai_do">用 AI 体系化整理</string>
+    <string name="digest_ai_redo">重新 AI 整理一遍</string>
     <string name="digest_ai_cancel">取消生成</string>
     <string name="digest_ai_elapsed">AI 正在整理 · 已用 %1$d 秒</string>
     <string name="digest_ai_elapsed_multi">AI 正在整理 · 已用 %1$d 秒 · 第 %2$d/%3$d 段</string>

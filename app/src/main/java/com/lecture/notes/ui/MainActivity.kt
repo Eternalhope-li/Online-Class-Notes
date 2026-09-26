@@ -303,7 +303,7 @@ class MainActivity : AppCompatActivity() {
                 delay(100)
                 waited += 100
             }
-            if (ShotGate.isReady()) ShotService.start(this@MainActivity)
+            if (ShotGate.isReady()) ShotService.start(this@MainActivity, bySession = true)
         }
     }
 

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.view.ContextThemeWrapper
@@ -48,6 +49,25 @@ class NoteRendererTest {
 
     private fun texts(views: List<View>): List<String> =
         views.filterIsInstance<TextView>().map { it.text?.toString().orEmpty() }
+
+    /** 大节标题里模型爱写 `00:12-00:31`，反引号不能原样露在标题上。 */
+    @Test
+    fun sectionTitleSwallowsInlineCodeBackticks() {
+        val (_, all) = render("## 一、命令行 · 打开 `00:12-00:31`\n\n- 内容\n")
+        val t = texts(all)
+        assertTrue("标题里的反引号应该被吃掉：$t", t.none { it.contains('`') })
+        assertTrue("标题正文还在：$t", t.any { it.contains("命令行") && it.contains("00:12-00:31") })
+    }
+
+    /** 模型把图塞在要点行里时，界面上也得真的画出图来 —— 之前只把它当文字，看起来就是「图示没有」。 */
+    @Test
+    fun inlineShotInsideBulletRendersImage() {
+        val (_, all) = render("## 一、终端\n\n- **图示**：![课堂截图 00:39](shots/x.jpg) [图示] - 窗口显示 Error。\n")
+        assertTrue("要点行里的图应该渲染成图片", all.any { it is ImageView })
+        val t = texts(all)
+        assertTrue("图上的说明要留在正文里：$t", t.any { it.contains("窗口显示 Error") })
+        assertTrue("不该剩 Markdown 记号：$t", t.none { it.contains("![") })
+    }
 
     @Test
     fun rendersDemoDigestIntoViews() {

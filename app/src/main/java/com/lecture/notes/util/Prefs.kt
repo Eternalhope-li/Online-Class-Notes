@@ -74,6 +74,16 @@ object Prefs {
         get() = sp.getBoolean("auto_shot", true)
         set(v) = sp.edit().putBoolean("auto_shot", v).apply()
 
+    /**
+     * 这次圆钮是「跟着记录顺手挂出来」的。
+     *
+     * 记录一结束就把它收回去 —— 否则它会一直飘在界面上（笔记页左上角正好压住标题）。
+     * 用户在设置里手动开的那个不受影响，会一直留着。
+     */
+    var shotBySession: Boolean
+        get() = sp.getBoolean("shot_by_session", false)
+        set(v) = sp.edit().putBoolean("shot_by_session", v).apply()
+
     /** 截完自动丢给视觉模型分析。 */
     var shotAutoAnalyze: Boolean
         get() = sp.getBoolean("shot_auto_analyze", true)
