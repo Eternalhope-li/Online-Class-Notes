@@ -13,6 +13,7 @@ import com.lecture.notes.ui.DetailActivity
 import com.lecture.notes.ui.DigestActivity
 import com.lecture.notes.util.DigestDoc
 import com.lecture.notes.util.Prefs
+import java.util.ArrayDeque
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,9 @@ object DigestJob {
         val total: Int = 0,
         val startedAt: Long = 0L,
         val label: String = "",
-        val message: String = ""
+        val message: String = "",
+        /** 批量整理时后面还排着几篇（0 就是当前这篇是最后一篇）。 */
+        val queued: Int = 0
     ) {
         val running: Boolean get() = phase == Phase.RUNNING
     }
@@ -54,6 +57,9 @@ object DigestJob {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
 
+    /** 排队等着整理的笔记：批量整理时一篇跑完自动接下一篇。 */
+    private val pending = ArrayDeque<Note>()
+
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
@@ -61,16 +67,55 @@ object DigestJob {
     fun isRunning(id: String?): Boolean = id != null && _state.value.running && _state.value.noteId == id
     val runningNoteId: String? get() = if (_state.value.running) _state.value.noteId else null
 
-    /** 开始整理一篇笔记。已经有任务在跑、或者没填 Key，就返回 false。 */
-    fun start(note: Note): Boolean {
-        if (isRunning()) return false
-        if (Prefs.llmKey.isBlank()) return false
+    /** 开始整理一篇笔记：[enqueue] 的单篇版本，返回是否排上了。 */
+    fun start(note: Note): Boolean = enqueue(listOf(note)) > 0
+
+    /**
+     * 排队整理一批笔记（首页多选之后「AI 整理」走的就是这里）。
+     *
+     * 一次只跑一篇 —— 反正模型那边并发也快不了，还会互相抢带宽、更容易失败。排进来的
+     * 一篇接一篇自动跑完，进度共用一条通知，用户选完就能退出页面去干别的。
+     *
+     * 正在整理的那篇、已经在队列里的、没填 Key 的都会被跳过，所以「选了 5 篇实际排了 3 篇」
+     * 是正常结果；返回值就是真正排进去的篇数。
+     */
+    fun enqueue(notes: List<Note>): Int {
+        if (Prefs.llmKey.isBlank()) return 0
+        val cur = _state.value
+        var added = 0
+        for (n in notes) {
+            if (cur.running && cur.noteId == n.id) continue
+            if (pending.any { it.id == n.id }) continue
+            pending.addLast(n)
+            added++
+        }
+        if (added == 0) return 0
+        if (_state.value.running) {
+            _state.value = _state.value.copy(queued = pending.size)
+        } else {
+            next()
+        }
+        return added
+    }
+
+    /** 从队列里取下一篇开跑。 */
+    private fun next() {
+        val note = pending.pollFirst()
+        if (note == null) {
+            _state.value = _state.value.copy(queued = 0)
+            return
+        }
+        run(note)
+    }
+
+    private fun run(note: Note) {
         _state.value = State(
             phase = Phase.RUNNING,
             noteId = note.id,
             noteTitle = note.title,
             startedAt = System.currentTimeMillis(),
-            label = App.instance.getString(R.string.digest_ai_start)
+            label = App.instance.getString(R.string.digest_ai_start),
+            queued = pending.size
         )
         notifyProgress()
         job = scope.launch {
@@ -83,6 +128,7 @@ object DigestJob {
                 NoteStore.saveDigest(note.id, DigestDoc.ai(note, tag, body))
                 _state.value = _state.value.copy(phase = Phase.DONE, label = "")
                 notifyDone(note)
+                finished(note.id)
             } catch (t: Throwable) {
                 val cancelled = t is CancellationException || t.message == LlmDigest.CANCELLED
                 val msg = if (cancelled) {
@@ -94,11 +140,22 @@ object DigestJob {
                 _state.value = prev.copy(phase = Phase.FAILED, label = "", message = msg)
                 // 用户自己取消的就不用通知了，页面上给个提示即可
                 if (!cancelled) notifyFailed(note, msg)
+                // 用户掐断的是整批：队列一起清掉，别在他走了之后接着跑
+                if (cancelled) pending.clear() else finished(note.id)
             } finally {
                 cancelProgress()
             }
         }
-        return true
+    }
+
+    /** 一篇跑完：队列里还有就接着跑下一篇，没有就把排队数收回 0。 */
+    private fun finished(id: String) {
+        val note = pending.pollFirst()
+        if (note != null) {
+            run(note)
+            return
+        }
+        if (_state.value.noteId == id) _state.value = _state.value.copy(queued = 0)
     }
 
     /** 用户主动掐断：断开正在等的那趟请求，再取消协程。 */
@@ -111,13 +168,14 @@ object DigestJob {
             message = App.instance.getString(R.string.digest_ai_cancelled)
         )
         LlmDigest.cancelActive()
+        pending.clear()
         job?.cancel()
         cancelProgress()
     }
 
     /** 页面把「完成 / 失败」提示消化掉之后调一下，免得下次进页面又弹一遍。 */
     fun consume() {
-        if (!_state.value.running) _state.value = State()
+        if (!_state.value.running && pending.isEmpty()) _state.value = State()
     }
 
     // ------------------------------------------------------------ 通知
@@ -135,10 +193,14 @@ object DigestJob {
     private fun notifyProgress() {
         val st = _state.value
         val id = st.noteId ?: return
-        val text = if (st.total > 1) {
-            App.instance.getString(R.string.digest_ai_notif_progress_multi, st.noteTitle, st.done, st.total)
-        } else {
-            App.instance.getString(R.string.digest_ai_notif_progress, st.noteTitle)
+        val text = when {
+            st.queued > 0 ->
+                App.instance.getString(R.string.digest_ai_notif_queue, st.noteTitle, st.queued)
+
+            st.total > 1 ->
+                App.instance.getString(R.string.digest_ai_notif_progress_multi, st.noteTitle, st.done, st.total)
+
+            else -> App.instance.getString(R.string.digest_ai_notif_progress, st.noteTitle)
         }
         val n = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
             .setSmallIcon(R.drawable.ic_stat_note)

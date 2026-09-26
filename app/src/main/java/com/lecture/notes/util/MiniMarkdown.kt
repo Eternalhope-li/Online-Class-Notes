@@ -85,6 +85,14 @@ object MiniMarkdown {
     }
 
     /** 图片提行后剩下的残渣：「**图示**：」「[图示]」「- - 」。 */
+    /** 列表项里的代码块会被整块缩进，渲染出来左边参差不齐 —— 削掉公共缩进。 */
+    private fun dedent(lines: List<String>): List<String> {
+        val indents = lines.filter { it.isNotBlank() }.map { line -> line.indexOfFirst { !it.isWhitespace() } }
+        val cut = indents.minOrNull() ?: 0
+        if (cut <= 0) return lines
+        return lines.map { if (it.length >= cut) it.substring(cut) else it.trimStart() }
+    }
+
     private fun tidyImageLabel(s: String): String {
         var t = s
             .replace(Regex("\\*\\*\\s*图\\s*示\\s*\\*\\*\\s*[:：]?\\s*"), "")
@@ -128,7 +136,7 @@ object MiniMarkdown {
                     i++
                 }
                 if (i < lines.size) i++
-                out.add(Block.Code(buf))
+                out.add(Block.Code(dedent(buf)))
                 continue
             }
 
@@ -190,6 +198,38 @@ object MiniMarkdown {
                 flushPara()
                 val body = b.groupValues[2].trim()
                 val img = IMAGE_RE.find(body)
+                if (body.startsWith("```")) {
+                    // 模型常把代码块整个塞进列表项（`- ```bash`），照原样解析就成了一串带「◦」的
+                    // 反引号残渣。这里认出来，把围栏和列表标记一起吃掉，还原成正经代码块。
+                    i++
+                    val buf = ArrayList<String>()
+                    while (i < lines.size) {
+                        val raw = lines[i]
+                        val mark = BULLET_RE.find(raw)
+                        val text = if (mark != null) mark.groupValues[2].trimEnd() else raw.trimEnd()
+                        if (text.trimStart().startsWith("```")) {
+                            i++
+                            break
+                        }
+                        buf.add(text)
+                        i++
+                    }
+                out.add(Block.Code(dedent(buf)))
+                continue
+                }
+                val unquoted = body.trim('"', '“', '”', '\'')
+                if (unquoted.startsWith(">")) {
+                    // 视觉模型爱把要点写成 `- > 要点：xxx`（外面还套一层引号）。这是引用不是列表项，
+                    // 照列表项渲染会把「>」原样显示出来。只有「> 要点：」后面没内容的那种直接丢掉 ——
+                    // 内容在下面几行，留着它只会多出一条空引号。
+                    val said = unquoted.removePrefix(">").trim()
+                    val head = said.substringBefore('：').substringBefore(':').trim()
+                    if (MARKER_RE.containsMatchIn(head)) {
+                        if (said.length > head.length + 1) out.add(Block.Quote(said, calloutOf(said)))
+                        i++
+                        continue
+                    }
+                }
                 if (img != null) {
                     out.add(Block.Image(img.groupValues[2].trim(), img.groupValues[1].trim()))
                 } else {
@@ -225,8 +265,11 @@ object MiniMarkdown {
 
     private fun depthOf(indent: String): Int = (indent.replace("\t", "  ").length / 2).coerceIn(0, 3)
 
+    /** 「> 要点：」这类标记词，用来把塞进列表项里的引用认出来。 */
+    private val MARKER_RE = Regex("(要点|重点|结论|注意|提示|小结|总结|考点)")
+
     private fun calloutOf(text: String): Callout = when {
-        containsAny(text, "注意", "易错", "必考", "重点", "警告", "不要", "别忘") -> Callout.WARN
+        containsAny(text, "注意", "易错", "必考", "重点", "要点", "警告", "不要", "别忘") -> Callout.WARN
         containsAny(text, "一句话总结", "小结", "总结", "结论", "记住", "核心") -> Callout.OK
         else -> Callout.INFO
     }

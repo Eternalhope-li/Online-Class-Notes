@@ -40,7 +40,32 @@ class NoteTitleTest {
     fun truncatesToMaxChars() {
         val note = NoteStore.create("mic")
         NoteStore.appendEntry(note.id, Entry(1000L, "今天讲二叉树的遍历和它的递归实现"))
-        assertEquals("今天讲二叉树的遍历和它的", NoteStore.suggestTitle(note.id, 12))
+        // 切到 12 个字正好落在「和它的」上，读起来是半截话，索性退到「遍历」为止
+        assertEquals("今天讲二叉树的遍历", NoteStore.suggestTitle(note.id, 12))
+    }
+
+    @Test
+    fun skipsFillerOpening() {
+        val note = NoteStore.create("mic")
+        NoteStore.appendEntry(note.id, Entry(1000L, "所以呢这期给大家。"))
+        NoteStore.appendEntry(note.id, Entry(2000L, "好，今天我们来讲一下HTTP协议的基础。"))
+        assertEquals("今天我们来讲一下HTTP协议", NoteStore.suggestTitle(note.id))
+    }
+
+    @Test
+    fun skipsAdLine() {
+        val note = NoteStore.create("mic")
+        NoteStore.appendEntry(note.id, Entry(1000L, "记得点赞关注三连"))
+        NoteStore.appendEntry(note.id, Entry(2000L, "三次握手是这样建立的"))
+        assertEquals("三次握手是这样建立的", NoteStore.suggestTitle(note.id))
+    }
+
+    @Test
+    fun joinsTwoShortOpenings() {
+        val note = NoteStore.create("mic")
+        NoteStore.appendEntry(note.id, Entry(1000L, "先讲定义"))
+        NoteStore.appendEntry(note.id, Entry(2000L, "再讲三个例子"))
+        assertEquals("先讲定义再讲三个例子", NoteStore.suggestTitle(note.id))
     }
 
     @Test

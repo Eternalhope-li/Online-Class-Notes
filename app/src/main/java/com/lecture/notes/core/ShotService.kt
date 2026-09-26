@@ -71,6 +71,7 @@ class ShotService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        instance = this
         when (intent?.action) {
             ACTION_STOP -> {
                 stopEverything()
@@ -94,6 +95,7 @@ class ShotService : Service() {
     override fun onDestroy() {
         scope.cancel()
         removeOverlays()
+        if (instance === this) instance = null
         // 只退掉自己的登记；录音还在用同一个授权的话不能停，否则会把录音掐断
         ShotGate.release(ShotGate.OWNER_SHOT)
         Prefs.shotFloat = false
@@ -220,6 +222,7 @@ class ShotService : Service() {
 
         w.addView(binding.root, params)
         ballView = binding.root
+        applyHidden()
 
         val bubble = ViewShotBubbleBinding.inflate(LayoutInflater.from(this))
         val bp = WindowManager.LayoutParams(
@@ -329,6 +332,8 @@ class ShotService : Service() {
     }
 
     private fun bubble(text: String) {
+        // 圆钮自己在躲着的时候（用户就在我们自己的页面上）别再冒气泡
+        if (hidden) return
         handler.post {
             val v = bubbleView ?: return@post
             (v as? android.widget.TextView)?.text = text
@@ -338,10 +343,23 @@ class ShotService : Service() {
         }
     }
 
+    /**
+     * 自家页面在前台时把圆钮收起来。
+     *
+     * 圆钮浮在所有应用之上，落在「实时记录」页正好压住返回键和计时，用户还得先把它拖走才能返回。
+     * 用户真正需要它的场合是在别的 App 里看课，所以自家页面一在前台就躲，退出去再放出来。
+     */
+    private fun applyHidden() {
+        handler.post {
+            ballView?.visibility = if (hidden) View.GONE else View.VISIBLE
+            if (hidden) bubbleView?.visibility = View.GONE
+        }
+    }
+
     /** 抓图的那一瞬间把自己藏起来，否则圆钮和气泡会被一起截进画面。 */
     private fun setOverlayVisible(visible: Boolean) {
         handler.post {
-            ballView?.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+            ballView?.visibility = if (visible && !hidden) View.VISIBLE else View.INVISIBLE
             if (!visible) bubbleView?.visibility = View.GONE
         }
     }
@@ -502,6 +520,23 @@ class ShotService : Service() {
 
         /** 藏起自己之后等一小会儿再抓，给系统留出重新合成的两帧。 */
         private const val HIDE_BEFORE_GRAB_MS = 140L
+        /** 自家页面在前台时圆钮躲着（见 [setHidden]）。 */
+        @Volatile
+        private var hidden = false
+
+        /** 正在跑的那个实例；没在跑就是 null。 */
+        @Volatile
+        private var instance: ShotService? = null
+
+        /**
+         * 自家页面进了前台就把圆钮收起来，回到别的 App 再放出来。
+         *
+         * 状态记在这里而不是页面上：几个页面来回切、服务中途重启，都不用重新对齐一次。
+         */
+        fun setHidden(hide: Boolean) {
+            hidden = hide
+            instance?.applyHidden()
+        }
 
         fun start(ctx: Context, resultCode: Int, data: Intent, bySession: Boolean? = null) {
             val intent = Intent(ctx, ShotService::class.java)

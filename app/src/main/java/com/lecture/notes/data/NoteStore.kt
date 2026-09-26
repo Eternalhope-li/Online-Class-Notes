@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import com.lecture.notes.R
 import com.lecture.notes.util.Formats
 import com.lecture.notes.util.MiniMarkdown
+import com.lecture.notes.util.TitlePicker
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -26,6 +27,9 @@ object NoteStore {
 
     /** 没在录音时截的图，都落到当天的「课堂截图」这篇里。 */
     const val SOURCE_SHOT = "shot"
+
+    /** 回收站目录里记「什么时候删的」，用来决定哪天真的清掉。 */
+    private const val TRASH_STAMP = ".deleted"
 
     private lateinit var root: File
 
@@ -205,39 +209,141 @@ object NoteStore {
     }
 
     /**
-     * 默认标题：从这次记录的开头几句里取字，比「网课笔记 11:15」这种看得出讲了什么。
-     * 只读最前面几行，凑够字数就停，所以很快。实在没内容才退回时间戳。
+     * 默认标题：从这次记录的开头几句里挑一句，比「网课笔记 11:15」这种看得出讲了什么。
+     * 只读最前面十几行，所以很快；挑句子的规则在 [TitlePicker] 里，实在没内容才退回时间戳。
      */
     fun suggestTitle(id: String, maxChars: Int = 14): String {
-        val sb = StringBuilder()
+        val lines = ArrayList<String>(16)
         try {
             linesFile(id).useLines { seq ->
-                for (raw in seq.take(12)) {
-                    if (sb.length >= maxChars) break
+                for (raw in seq.take(24)) {
+                    if (lines.size >= 10) break
                     val o = try {
                         JSONObject(raw)
                     } catch (_: Exception) {
                         continue
                     }
                     if (o.optString("img").isNotBlank()) continue
-                    val t = o.optString("x").replace(Regex("\\s|\\u3000|\\u00a0"), "")
-                    if (t.isEmpty() || t == markerText) continue
-                    sb.append(t)
+                    val t = o.optString("x")
+                    if (t.isBlank() || t == markerText) continue
+                    lines.add(t)
                 }
             }
         } catch (_: Exception) {
         }
-        val head = sb.toString().trimStart('★', '，', '。', '、', '：', '；', ',', '.', ':', ';')
+        val head = TitlePicker.pick(lines, maxChars)
         if (head.isBlank()) {
             val at = readMeta(id)?.optLong("createdAt", 0L) ?: 0L
             return "网课笔记 " + Formats.shortStamp(if (at > 0L) at else System.currentTimeMillis())
         }
-        return if (head.length <= maxChars) head else head.substring(0, maxChars)
+        return head
     }
 
+    /**
+     * 删除笔记 = 挪进回收站（`.trash/<id>`），不是真删。
+     *
+     * 手一滑删掉一整周的课、还找不回来，是最难受的一种事故。首页和详情页删完都会给一条
+     * 「撤销」，七天之内都还能捞回来；超过七天 [purgeTrash] 才真的清掉。
+     */
     fun delete(id: String) {
-        dir(id).deleteRecursively()
+        val d = dir(id)
+        if (!d.exists()) return
+        val home = File(trashRoot(), id)
+        home.parentFile?.mkdirs()
+        if (home.exists()) home.deleteRecursively()
+        if (!d.renameTo(home)) {
+            d.copyRecursively(home, overwrite = true)
+            d.deleteRecursively()
+        }
+        // 删除时间写在回收站目录里：目录自己的 mtime 会被 rename 带成「上次编辑时间」，不可靠
+        File(home, TRASH_STAMP).writeText(System.currentTimeMillis().toString())
     }
+
+    /** 从回收站捞回来。原来那篇要是已经重建了（同名 id）就不动它。 */
+    fun restore(id: String): Boolean {
+        val src = File(trashRoot(), id)
+        if (!src.exists()) return false
+        val dst = dir(id)
+        if (dst.exists()) return false
+        if (!src.renameTo(dst)) {
+            src.copyRecursively(dst, overwrite = true)
+            src.deleteRecursively()
+        }
+        File(dst, TRASH_STAMP).delete()
+        return true
+    }
+
+    /**
+     * 清掉回收站里放了超过 [keepDays] 天的笔记。
+     *
+     * 没有时间戳的（写失败 / 手写进去的目录）一律留着 —— 宁可多占点地方，也不能把还没
+     * 机会撤销的笔记悄悄删掉。
+     */
+    fun purgeTrash(keepDays: Int = 7) {
+        val deadline = System.currentTimeMillis() - keepDays * 24L * 3600_000L
+        for (d in trashRoot().listFiles() ?: return) {
+            val stamp = File(d, TRASH_STAMP)
+            val at = if (stamp.exists()) stamp.readText().trim().toLongOrNull() else null
+            if (at != null && at < deadline) d.deleteRecursively()
+        }
+    }
+
+    /** 回收站里的一篇：标题、删的时间、卡片上要显示的那点摘要。 */
+    data class Trashed(
+        val id: String,
+        val title: String,
+        val deletedAt: Long,
+        val count: Int,
+        val images: Int,
+        val preview: String
+    )
+
+    /**
+     * 回收站里都有什么。
+     *
+     * 详情页 / 首页那条「撤销」只活几秒，手滑之后过一会儿才想起来的人也得有路可走 ——
+     * 这就是那条路：菜单 → 回收站 → 点一下就捞回来。
+     */
+    fun trashedNotes(): List<Trashed> {
+        val dirs = trashRoot().listFiles() ?: return emptyList()
+        val out = ArrayList<Trashed>(dirs.size)
+        for (d in dirs) {
+            if (!d.isDirectory) continue
+            val stamp = File(d, TRASH_STAMP)
+            val at = if (stamp.exists()) (stamp.readText().trim().toLongOrNull() ?: 0L) else 0L
+            // 只读 meta.json，不去碰 lines.jsonl：回收站列表要瞬时打开
+            val meta = try {
+                val f = File(d, "meta.json")
+                if (f.exists()) JSONObject(f.readText()) else JSONObject()
+            } catch (e: Exception) {
+                JSONObject()
+            }
+            out.add(
+                Trashed(
+                    id = d.name,
+                    title = meta.optString("title").ifBlank { d.name },
+                    deletedAt = at,
+                    count = meta.optInt("count"),
+                    images = meta.optInt("imgs"),
+                    preview = meta.optString("preview")
+                )
+            )
+        }
+        return out.sortedByDescending { it.deletedAt }
+    }
+
+    /** 从回收站里彻底删掉一篇（「清空回收站」用的，删了就真没了）。 */
+    fun deleteForever(id: String) {
+        File(trashRoot(), id).deleteRecursively()
+    }
+
+    /** 清空回收站。 */
+    fun emptyTrash() {
+        val dirs = trashRoot().listFiles() ?: return
+        for (d in dirs) d.deleteRecursively()
+    }
+
+    private fun trashRoot(): File = File(root, ".trash")
 
     private fun readMeta(id: String): JSONObject? = try {
         val f = metaFile(id)
@@ -308,6 +414,8 @@ object NoteStore {
         val out = ArrayList<Meta>()
         for (d in dirs) {
             if (!d.isDirectory) continue
+            // `.trash` 是回收站，不算「我的笔记」
+            if (d.name.startsWith(".")) continue
             // 计数按磁盘上的真实内容现算，不读 meta.json 里缓存的那份。
             // 录音过程中插进来的截图是另一条写入路径，历史版本也会留下旧值，
             // 结果就是卡片写「5 句」而正文有 6 句、明明有截图却不显示「图 N」。

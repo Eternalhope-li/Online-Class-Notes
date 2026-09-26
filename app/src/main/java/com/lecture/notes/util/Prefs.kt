@@ -84,6 +84,11 @@ object Prefs {
         get() = sp.getBoolean("shot_by_session", false)
         set(v) = sp.edit().putBoolean("shot_by_session", v).apply()
 
+    /** 首页列表「只看未整理」的开关，关掉 App 再打开还保持。 */
+    var onlyUndigested: Boolean
+        get() = sp.getBoolean("only_undigested", false)
+        set(v) = sp.edit().putBoolean("only_undigested", v).apply()
+
     /** 截完自动丢给视觉模型分析。 */
     var shotAutoAnalyze: Boolean
         get() = sp.getBoolean("shot_auto_analyze", true)

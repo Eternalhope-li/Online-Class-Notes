@@ -49,6 +49,9 @@ class LiveActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 录课时一直亮着：看板书的人不会去点屏幕，让它按系统超时灭屏反而碍事。
+        // 真要省电（放兜里只听声音）按一下电源键就行，这个标记不拦电源键。
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         binding = ActivityLiveBinding.inflate(layoutInflater)
         setContentView(binding.root)
 

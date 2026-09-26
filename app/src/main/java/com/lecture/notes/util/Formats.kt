@@ -36,6 +36,23 @@ object Formats {
         return if (c.get(Calendar.DAY_OF_YEAR) == today) "今天 " + fmt("HH:mm").format(Date(ts))
         else fmt("MM-dd HH:mm").format(Date(ts))
     }
+    /** 回收站里那条「3 天前删的」。 */
+    fun ago(ts: Long, now: Long = System.currentTimeMillis()): String {
+        val min = ((now - ts).coerceAtLeast(0)) / 60000
+        return when {
+            min < 1 -> "刚刚"
+            min < 60 -> "$min 分钟前"
+            min < 60 * 24 -> "${min / 60} 小时前"
+            else -> "${min / 60 / 24} 天前"
+        }
+    }
+
+    /** 首页那行「累计 3 小时 20 分」用的时长：只说分钟和小时，秒级没意义。 */
+    fun duration(ms: Long): String {
+        val min = ms / 60000
+        return if (min < 60) "$min 分钟" else "${min / 60} 小时 ${min % 60} 分"
+    }
+
     /** 笔记默认标题里用的短时间：09-25 20:31 */
     fun shortStamp(ts: Long): String = fmt("MM-dd HH:mm").format(Date(ts))
 }

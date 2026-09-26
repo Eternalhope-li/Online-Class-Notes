@@ -47,6 +47,9 @@
             android:name=".ui.SettingsActivity"
             android:exported="false" />
         <activity
+            android:name=".ui.TrashActivity"
+            android:exported="false" />
+        <activity
             android:name=".ui.DigestActivity"
             android:exported="false" />
         <activity

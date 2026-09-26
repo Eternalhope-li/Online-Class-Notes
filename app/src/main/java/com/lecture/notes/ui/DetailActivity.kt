@@ -193,7 +193,8 @@ class DetailActivity : AppCompatActivity() {
                 .setMessage(R.string.detail_delete_msg)
                 .setPositiveButton(R.string.common_ok) { _, _ ->
                     NoteStore.delete(n.id)
-                    toast(getString(R.string.toast_deleted))
+                    // 「撤销」回到列表页再给：这个页面马上就要关掉了
+                    MainActivity.pendingUndoIds = listOf(n.id)
                     finish()
                 }
                 .setNegativeButton(R.string.common_cancel, null)

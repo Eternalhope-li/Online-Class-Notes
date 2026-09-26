@@ -181,4 +181,45 @@ class MiniMarkdownTest {
         // 行内片段那一路（表格单元格等）仍然保留 Markdown 记号
         assertTrue(MiniMarkdown.inlinePlain("![图示](shots/a.jpg)").contains("![图示](shots/a.jpg)"))
     }
+
+    /** AI 常把代码块整个塞进列表项里，照原样渲染就是一串带项目符号的反引号残渣。 */
+    @Test
+    fun codeFenceInsideBulletBecomesCodeBlock() {
+        val md = listOf(
+            "- 在终端里可以这样跑：",
+            "  - ```bash",
+            "    python main.py",
+            "    ```",
+            "- 结束"
+        ).joinToString("\n")
+        val blocks = MiniMarkdown.parse(md)
+        val code = blocks.filterIsInstance<Block.Code>().single()
+        assertEquals(listOf("python main.py"), code.lines)
+        assertTrue(
+            "围栏不该留在要点里",
+            blocks.none { it is Block.Bullet && it.text.contains("```") }
+        )
+    }
+
+    /** 视觉模型写的 `- > 要点：xxx` 是引用，不是列表项 —— 照列表渲染会把「>」原样显示出来。 */
+    @Test
+    fun visionMarkerBulletBecomesQuote() {
+        val quote = MiniMarkdown.parse("- > 要点：一定要先看文档")
+            .filterIsInstance<Block.Quote>().single()
+        assertEquals("要点：一定要先看文档", quote.text)
+        assertEquals(Callout.WARN, quote.kind)
+    }
+
+    /** 只有标记没有内容的那种（`- "> 要点："`）直接丢掉，内容在下面几行里。 */
+    @Test
+    fun emptyVisionMarkerBulletIsDropped() {
+        val md = listOf(
+            "- 图里是一张流程图",
+            "- \"> 要点：\"",
+            "- 做作业记得画图"
+        ).joinToString("\n")
+        val bullets = MiniMarkdown.parse(md).filterIsInstance<Block.Bullet>()
+        assertEquals(2, bullets.size)
+        assertTrue(bullets.none { it.text.contains("要点") })
+    }
 }

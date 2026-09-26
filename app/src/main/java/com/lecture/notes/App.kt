@@ -1,11 +1,14 @@
 package com.lecture.notes
 
+import android.app.Activity
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.os.Bundle
 import com.lecture.notes.core.Recorder
+import com.lecture.notes.core.ShotService
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.util.Prefs
 
@@ -18,9 +21,35 @@ class App : Application() {
         // 进程是新起的，就说明悬浮截图服务早就没了（录屏授权也不可复用），把开关状态归位
         Prefs.shotFloat = false
         NoteStore.init(this)
+        // 回收站里放了七天以上的笔记，进程起来时清一次（别等用户想起来再删）
+        Thread({ NoteStore.purgeTrash() }, "trash-purge").start()
         Recorder.init(this)
         Recorder.prepare()
         createChannel()
+        // 悬浮圆钮只在「别的 App」里有用：自家页面一在前台就收起来，免得压住返回键和计时。
+        // 用 started 计数而不是 resumed：A 切 B 时 A 先 pause、后 stop，不会中间闪一下。
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            private var started = 0
+
+            override fun onActivityStarted(activity: Activity) {
+                started++
+                ShotService.setHidden(true)
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                started--
+                if (started <= 0) {
+                    started = 0
+                    ShotService.setHidden(false)
+                }
+            }
+
+            override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        })
     }
 
     private fun createChannel() {

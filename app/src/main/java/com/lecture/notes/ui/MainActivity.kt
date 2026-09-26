@@ -7,24 +7,27 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
-import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doOnTextChanged
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.snackbar.Snackbar
 import com.lecture.notes.R
 import com.lecture.notes.core.CaptureService
 import com.lecture.notes.core.Recorder
 import com.lecture.notes.core.ShotGate
 import com.lecture.notes.core.ShotService
 import com.lecture.notes.data.NoteStore
+import com.lecture.notes.core.DigestJob
+import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.databinding.ActivityMainBinding
 import com.lecture.notes.util.Formats
 import com.lecture.notes.util.Prefs
@@ -39,6 +42,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var adapter: NotesAdapter
     private var searchJob: Job? = null
+
+    /** 多选：长按任意一篇进来，顶栏换成「已选 N 篇 / 全选 / 导出 / 删除」。 */
+    private var selecting = false
+    private var exporting = false
+
+    /** 列表筛选「只看未整理」：整理完一批之后，剩下的那几篇一眼看得见。 */
+    private var filterUndigested = false
+
+    /**
+     * 到这个时刻为止，列表上的点击一律不算。
+     *
+     * 从右上角菜单点「多选」时，手指抬起的那一下会漏给底下的列表 —— 顶栏一换、列表往上
+     * 顶了一格，正好把某一篇勾上。300ms 之后就是用户自己的点击了。
+     */
+    private var ignoreClicksUntil = 0L
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -88,17 +106,68 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
 
+                R.id.action_select -> {
+                    enterSelect(null)
+                    true
+                }
+
+                R.id.action_trash -> {
+                    openTrash()
+                    true
+                }
+
                 else -> false
             }
         }
 
-        adapter = NotesAdapter(onClick = { openNote(it) }, onLongClick = { noteMenu(it) })
+        adapter = NotesAdapter(
+            onClick = {
+                when {
+                    !selecting -> openNote(it)
+                    SystemClock.uptimeMillis() >= ignoreClicksUntil -> toggleSelect(it)
+                }
+            },
+            onLongClick = { enterSelect(it.id) }
+        )
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.list.adapter = adapter
 
         binding.search.doOnTextChanged { text, _, _, _ -> onQueryChanged(text?.toString().orEmpty()) }
         binding.fab.setOnClickListener { startRecording() }
-        binding.recordingBar.setOnClickListener { openLive() }
+        filterUndigested = Prefs.onlyUndigested
+        binding.filter.setOnClickListener {
+            filterUndigested = !filterUndigested
+            Prefs.onlyUndigested = filterUndigested
+            syncFilter()
+            onQueryChanged(binding.search.text?.toString().orEmpty())
+        }
+        syncFilter()
+binding.recordingBar.setOnClickListener { openLive() }
+        // 多选：顶栏那排按钮 + 返回键。返回键只在多选里拦一下，别的时候照常退出页面。
+        binding.selectClose.setOnClickListener { exitSelect() }
+        binding.selectAll.setOnClickListener { toggleSelectAll() }
+        binding.selectDigest.setOnClickListener { digestSelected() }
+        binding.selectExport.setOnClickListener { exportSelected() }
+        binding.selectDelete.setOnClickListener { deleteSelected() }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (selecting) {
+                    exitSelect()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
+
+        // 后台整理完一篇（或一批）之后，首页的「已整理」标记得跟上
+        lifecycleScope.launch {
+            var wasRunning = false
+            DigestJob.state.collect { st ->
+                if (wasRunning && !st.running) refresh()
+                wasRunning = st.running
+            }
+        }
 
         askPermissions()
 
@@ -121,11 +190,19 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refresh()
+        // 详情页里删掉的那篇，提示得由活着的页面来弹
+        if (pendingUndoIds.isNotEmpty()) {
+            val ids = pendingUndoIds
+            pendingUndoIds = emptyList()
+            showUndo(getString(R.string.toast_deleted), ids, getString(R.string.toast_restored))
+        }
     }
 
     // ------------------------------------------------------------------ 列表
 
     private fun onQueryChanged(q: String) {
+        // 搜索会把列表换掉一批，多选状态下「选了几篇」会变得莫名其妙，直接退出多选
+        exitSelect()
         searchJob?.cancel()
         searchJob = lifecycleScope.launch {
             delay(200)
@@ -143,11 +220,19 @@ class MainActivity : AppCompatActivity() {
      * 让「保存下来的笔记都在哪」一目了然 —— 之前只有一列卡片，没有任何计数。
      */
     private fun showList(list: List<NoteStore.Meta>, query: String) {
-        adapter.submit(list)
-        binding.empty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
-        binding.notesCount.text = getString(
-            if (query.isBlank()) R.string.main_notes_count else R.string.main_notes_hit, list.size
+        val shown = if (filterUndigested) list.filter { !it.hasDigest } else list
+        adapter.submit(shown)
+        binding.empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
+        binding.emptyText.text = getString(
+            if (filterUndigested && query.isBlank()) R.string.main_empty_filtered else R.string.main_empty
         )
+        val total = list.sumOf { it.durationMs }
+        binding.notesCount.text = when {
+            query.isNotBlank() -> getString(R.string.main_notes_hit, shown.size)
+            filterUndigested -> getString(R.string.main_notes_undigested, shown.size)
+            total >= 60_000 -> getString(R.string.main_notes_count_time, shown.size, Formats.duration(total))
+            else -> getString(R.string.main_notes_count, shown.size)
+        }
     }
 
     private fun refresh() {
@@ -158,66 +243,184 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 筛选按钮的文字就是「点它会怎样」：开着的时候写着「显示全部」；暗一点的是没开。 */
+    private fun syncFilter() {
+        binding.filter.text = getString(
+            if (filterUndigested) R.string.main_filter_show_all else R.string.main_filter_only_undigested
+        )
+        binding.filter.alpha = if (filterUndigested) 1f else 0.55f
+    }
+
+    /**
+     * 删完给一条能撤销的提示。
+     *
+     * 删除是把笔记挪进回收站、七天之后才真删，所以这里来得及 —— 用户「啊，删错了」的时候
+     * 手上正好有一条能点的「撤销」。
+     */
+    private fun showUndo(message: String, ids: List<String>, done: String) {
+        if (ids.isEmpty()) return
+        Snackbar.make(binding.root, message, 8000)
+            .setAnchorView(binding.fab)
+            .setAction(R.string.common_undo) {
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) { ids.forEach { NoteStore.restore(it) } }
+                    refresh()
+                    toast(done)
+                }
+            }
+            .show()
+    }
+
+    /**
+     * 回收站：删除只是把笔记挪进来，满七天才会真清掉，这中间随时能点一下捞回来。
+     *
+     * 多选删完那条「撤销」只活几秒，手滑之后过一会儿才反应过来的人得另有条路 —— 就是这里。
+     */
+    private fun openTrash() = startActivity(Intent(this, TrashActivity::class.java))
+
     private fun openNote(meta: NoteStore.Meta) {
         startActivity(Intent(this, DetailActivity::class.java).putExtra(DetailActivity.EXTRA_ID, meta.id))
     }
 
-    private fun noteMenu(meta: NoteStore.Meta) {
-        val items = arrayOf(
-            getString(R.string.detail_digest_view),
-            getString(R.string.detail_rename),
-            getString(R.string.detail_delete)
-        )
-        AlertDialog.Builder(this)
-            .setTitle(meta.title)
-            .setItems(items) { _, which ->
-                when (which) {
-                    // 长按就能直接看整理稿：整理稿才是用户真正想读的东西，别逼人先进详情页翻菜单
-                    0 -> startActivity(
-                        Intent(this, DigestActivity::class.java).putExtra(DetailActivity.EXTRA_ID, meta.id)
-                    )
-                    1 -> renameDialog(meta)
-                    2 -> AlertDialog.Builder(this)
-                        .setMessage(R.string.detail_delete_msg)
-                        .setPositiveButton(R.string.common_ok) { _, _ ->
-                            NoteStore.delete(meta.id)
-                            refresh()
-                            toast(getString(R.string.toast_deleted))
-                        }
-                        .setNegativeButton(R.string.common_cancel, null)
-                        .show()
-                }
-            }
-            .show()
+    // ------------------------------------------------------------------ 多选
+
+    /**
+     * 进多选：长按任意一篇，或者右上角菜单里的「多选」。
+     *
+     * 这里只放「一批笔记一起做的事」——全选、AI 整理、导出、删除。整理稿 / 重命名这些
+     * 单篇操作留在笔记详情页的菜单里，顶栏按钮少一点，选了几篇一眼看得见。
+     */
+    private fun enterSelect(id: String?) {
+        if (adapter.itemCount == 0) return
+        if (!selecting) {
+            selecting = true
+            binding.toolbar.visibility = View.GONE
+            binding.selectBar.visibility = View.VISIBLE
+            binding.fab.hide()
+            adapter.selecting = true
+        }
+        if (id != null) {
+            adapter.toggle(id)
+        } else {
+            // 菜单进来的：手指抬起的那一下会漏给底下的列表，短暂屏蔽
+            ignoreClicksUntil = SystemClock.uptimeMillis() + 300
+        }
+        syncSelectBar()
     }
 
-    private fun renameDialog(meta: NoteStore.Meta) {
-        val input = EditText(this).apply {
-            setText(meta.title)
-            setSelection(text.length)
-        }
-        val density = resources.displayMetrics.density
-        val pad = (18 * density).toInt()
-        val container = FrameLayout(this)
-        container.addView(
-            input,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(pad, pad / 2, pad, 0) }
+    private fun exitSelect() {
+        if (!selecting) return
+        selecting = false
+        binding.selectBar.visibility = View.GONE
+        binding.toolbar.visibility = View.VISIBLE
+        binding.fab.show()
+        adapter.selecting = false
+        syncSelectBar()
+    }
+
+    private fun toggleSelect(meta: NoteStore.Meta) {
+        adapter.toggle(meta.id)
+        syncSelectBar()
+    }
+
+    private fun toggleSelectAll() {
+        val all = adapter.currentList.map { it.id }
+        if (adapter.selectedCount() >= all.size) adapter.selectAll(emptyList()) else adapter.selectAll(all)
+        syncSelectBar()
+    }
+
+    private fun syncSelectBar() {
+        val n = adapter.selectedCount()
+        binding.selectCount.text = getString(R.string.select_count, n)
+        binding.selectAll.text = getString(
+            if (n > 0 && n >= adapter.itemCount) R.string.select_none else R.string.select_all
         )
+        val can = n > 0 && !exporting
+        binding.selectDigest.isEnabled = can
+        binding.selectExport.isEnabled = can
+        binding.selectDelete.isEnabled = can
+        // 按钮都是纯文字，没有禁用态样式，压暗一点就够了
+        val alpha = if (can) 1f else 0.4f
+        binding.selectDigest.alpha = alpha
+        binding.selectExport.alpha = alpha
+        binding.selectDelete.alpha = alpha
+    }
+
+    private fun deleteSelected() {
+        val ids = adapter.selectedIds()
+        if (ids.isEmpty()) return
         AlertDialog.Builder(this)
-            .setTitle(R.string.detail_rename)
-            .setView(container)
+            .setTitle(getString(R.string.select_delete_title, ids.size))
+            .setMessage(R.string.select_delete_msg)
             .setPositiveButton(R.string.common_ok) { _, _ ->
-                val t = input.text.toString().trim()
-                if (t.isNotEmpty()) {
-                    NoteStore.rename(meta.id, t)
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) { ids.forEach { NoteStore.delete(it) } }
+                    exitSelect()
                     refresh()
+                    showUndo(
+                        getString(R.string.select_deleted, ids.size), ids,
+                        getString(R.string.select_restored, ids.size)
+                    )
                 }
             }
             .setNegativeButton(R.string.common_cancel, null)
             .show()
+    }
+
+    /** 多选导出：每篇一套 md + html + shots/，在「下载」里各占一个文件夹。 */
+    private fun exportSelected() {
+        val ids = adapter.selectedIds()
+        if (ids.isEmpty() || exporting) return
+        exporting = true
+        syncSelectBar()
+        toast(getString(R.string.select_exporting, ids.size))
+        lifecycleScope.launch {
+            val err = withContext(Dispatchers.IO) {
+                try {
+                    for (id in ids) {
+                        val n = NoteStore.load(id) ?: continue
+                        NoteStore.exportAll(this@MainActivity, n, null)
+                    }
+                    null
+                } catch (t: Throwable) {
+                    t.message ?: t.javaClass.simpleName
+                }
+            }
+            exporting = false
+            toast(
+                if (err == null) getString(R.string.select_exported, ids.size)
+                else getString(R.string.select_export_failed, err)
+            )
+            syncSelectBar()
+        }
+    }
+
+    /**
+     * 多选 AI 整理：排进后台队列，一篇接一篇跑，跑完发通知。
+     *
+     * 这是批量的意义所在 —— 攒了一周的课，选一片点一下就能去睡觉，不用守着一篇一篇点。
+     */
+    private fun digestSelected() {
+        val ids = adapter.selectedIds()
+        if (ids.isEmpty()) return
+        if (!LlmDigest.isReady()) {
+            toast(getString(R.string.digest_ai_need_key))
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return
+        }
+        lifecycleScope.launch {
+            val notes = withContext(Dispatchers.IO) {
+                ids.mapNotNull { NoteStore.load(it) }
+                    .filter { n -> n.entries.any { e -> !e.isImage && e.text.isNotBlank() } }
+            }
+            val queued = DigestJob.enqueue(notes)
+            if (queued == 0) {
+                toast(getString(R.string.select_digest_none))
+            } else {
+                toast(getString(R.string.select_digest_queued, queued))
+                exitSelect()
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 开录
@@ -308,4 +511,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    companion object {
+        /**
+         * 详情页删掉笔记之后，回到列表页得补一条「撤销」。
+         *
+         * 删除只是挪进回收站，来得及捞回来 —— 但提示得由还活着的那个页面来弹。
+         */
+        var pendingUndoIds: List<String> = emptyList()
+    }
 }
