@@ -11,6 +11,8 @@ import androidx.appcompat.view.ContextThemeWrapper
 import androidx.test.core.app.ApplicationProvider
 import com.lecture.notes.ui.NoteRenderer
 import com.lecture.notes.util.ImageUtil
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,5 +66,25 @@ class ShotRenderTest {
             root, "![课堂截图](gone.jpg)", null
         )
         assertTrue(root.childCount > 0)
+    }
+
+    /**
+     * 整理稿里写的是相对笔记目录的 `shots/a.jpg`。之前界面把 imageDir 设成了 shots 目录，
+     * 于是拼出 shots/shots/a.jpg，图片一直静默显示成空白框 —— 这里把两种约定都钉住。
+     */
+    @Test
+    fun imageSrcResolvesAgainstBothConventions() {
+        val ctx = context()
+        val noteDir = File(ctx.cacheDir, "note-1")
+        val shots = File(noteDir, "shots").apply { mkdirs() }
+        ImageUtil.writeJpeg(File(shots, "a.jpg"), Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888))
+
+        val againstNote = NoteRenderer(ctx).apply { imageDir = noteDir }
+        assertNotNull("相对笔记目录的 shots/a.jpg 必须找得到", againstNote.resolveImage("shots/a.jpg"))
+
+        val againstShots = NoteRenderer(ctx).apply { imageDir = shots }
+        assertNotNull("imageDir 直接给 shots 目录时，用文件名也要找得到", againstShots.resolveImage("shots/a.jpg"))
+
+        assertNull("不存在的图返回 null 而不是乱指一个文件", againstNote.resolveImage("shots/nope.jpg"))
     }
 }

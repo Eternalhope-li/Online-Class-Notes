@@ -113,6 +113,9 @@ object NoteStore {
     /** 一篇笔记的截图都放在自己的 shots 子目录里，导出和删除都不用单独处理。 */
     fun shotsDir(id: String): File = File(dir(id), "shots")
 
+    /** 笔记目录本身。整理稿里 `![alt](shots/a.jpg)` 这类相对路径，基准就是它。 */
+    fun noteDir(id: String): File = dir(id)
+
     fun shotFile(id: String, rel: String): File = File(dir(id), rel)
 
     /** 存一张截图，返回相对路径（写进 [Entry.image] 的就是它）。 */
@@ -376,29 +379,34 @@ object NoteStore {
      * AI 分析出来的说明本身就带 `- ` 列表，这里统一洗成缩进的小要点，
      * 并把每张图的时间戳放回第一条上，排版层就能渲染成时间胶囊 + 大图。
      */
-    fun shotsSection(note: Note, heading: String = "本课图示"): String {
-        val shots = note.entries.filter { it.isImage }
+    fun shotsSection(note: Note, heading: String = "本课图示", onlyRels: Set<String>? = null): String {
+        val shots = note.entries.filter { it.isImage && (onlyRels == null || it.image in onlyRels) }
         if (shots.isEmpty()) return ""
         val sb = StringBuilder()
         sb.append("\n## ").append(heading).append("\n\n")
-        for (e in shots) {
-            sb.append("![课堂截图 ").append(Formats.mmss(e.atMs)).append("](").append(e.image).append(")\n\n")
-            val lines = e.caption.trim().split('\n')
-                .map { it.trim().removePrefix("- ").removePrefix("* ").trim() }
-                .filter { it.isNotEmpty() }
-            if (lines.isEmpty()) {
-                sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` 截图（还没有说明）\n\n")
-                continue
-            }
-            lines.forEachIndexed { i, l ->
-                if (i == 0) {
-                    sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` ").append(l).append('\n')
-                } else {
-                    sb.append("  - ").append(l).append('\n')
-                }
-            }
-            sb.append('\n')
+        for (e in shots) sb.append(shotBlock(e))
+        return sb.toString()
+    }
+
+    /** 整理稿里的单张截图：图片 + 它的 AI 说明（没跑过分析就留一句占位）。 */
+    fun shotBlock(e: Entry): String {
+        val sb = StringBuilder()
+        sb.append("![课堂截图 ").append(Formats.mmss(e.atMs)).append("](").append(e.image).append(")\n\n")
+        val lines = e.caption.trim().split('\n')
+            .map { it.trim().removePrefix("- ").removePrefix("* ").trim() }
+            .filter { it.isNotEmpty() }
+        if (lines.isEmpty()) {
+            sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` 截图（还没有说明）\n\n")
+            return sb.toString()
         }
+        lines.forEachIndexed { i, l ->
+            if (i == 0) {
+                sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` ").append(l).append('\n')
+            } else {
+                sb.append("  - ").append(l).append('\n')
+            }
+        }
+        sb.append('\n')
         return sb.toString()
     }
 

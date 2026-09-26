@@ -19,7 +19,11 @@ import com.lecture.notes.util.Formats
 import com.lecture.notes.util.MiniMarkdown
 import com.lecture.notes.util.NoteDigest
 import com.lecture.notes.util.Prefs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -40,6 +44,11 @@ class DigestActivity : AppCompatActivity() {
     private var busy = false
     private var isAi = false
     private var isDemo = false
+    private var aiJob: Job? = null
+    private var aiStartedAt = 0L
+    private var aiDone = 0
+    private var aiTotal = 0
+    private var autoScroll = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +63,13 @@ class DigestActivity : AppCompatActivity() {
         binding.toolbar.setOnMenuItemClickListener { onMenu(it.itemId) }
         binding.toolbar.menu.findItem(R.id.action_view)?.title =
             getString(if (Prefs.digestRich) R.string.digest_view_raw else R.string.digest_view_rich)
+
+        // 顶部那颗按钮：平时是「用 AI 体系化整理」，跑起来就变成「取消生成」
+        binding.btnAi.setOnClickListener { if (busy) cancelAi() else runAi() }
+        binding.scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+            // 用户往上翻看前面内容时就别再自动往下滚了
+            autoScroll = !binding.scroll.canScrollVertically(1)
+        }
 
         if (intent.getBooleanExtra(EXTRA_DEMO, false)) {
             isDemo = true
@@ -111,6 +127,10 @@ class DigestActivity : AppCompatActivity() {
     // ------------------------------------------------------------ AI 体系化整理
 
     private fun runAi() {
+        if (isDemo) {
+            toast(getString(R.string.digest_demo_readonly))
+            return
+        }
         val n = note ?: return
         if (busy) return
         if (!LlmDigest.isReady()) {
@@ -118,22 +138,87 @@ class DigestActivity : AppCompatActivity() {
             startActivity(Intent(this, SettingsActivity::class.java))
             return
         }
+        aiStartedAt = System.currentTimeMillis()
+        aiDone = 0
+        aiTotal = 0
         setBusy(true, getString(R.string.digest_ai_start), 0, 0)
-        lifecycleScope.launch {
-            try {
-                val body = LlmDigest.digest(n) { done, total, label ->
-                    runOnUiThread { setBusy(true, getString(R.string.digest_ai_loading, done, total, label), done, total) }
+        aiJob = lifecycleScope.launch {
+            val ticker = launch {
+                while (isActive) {
+                    delay(500)
+                    setStatus(aiStatus())
                 }
-                // 截图不属于「文字转写」，AI 也看不到图，所以整理完由 App 自己把「本课图示」拼在后面
-                val md = header(n, getString(R.string.digest_tag_ai)) + body + "\n" + NoteStore.shotsSection(n)
+            }
+            try {
+                val body = LlmDigest.digest(
+                    n,
+                    onProgress = { done, total, _ ->
+                        aiDone = done
+                        aiTotal = total
+                        runOnUiThread {
+                            if (busy) {
+                                setBusy(true, null, done, total)
+                                setStatus(aiStatus())
+                            }
+                        }
+                    },
+                    onPartial = { text -> runOnUiThread { if (busy) showLive(text) } }
+                )
+                ticker.cancel()
+                // 截图会按 [[IMGn]] 记号还原进正文；模型漏放的图由 LlmDigest 补在末尾的「本课图示」里
+                val md = header(n, getString(R.string.digest_tag_ai)) + body + "\n"
                 withContext(Dispatchers.IO) { NoteStore.saveDigest(n.id, md) }
                 isAi = true
                 show(md, getString(R.string.digest_ai_done, Prefs.llmModel))
             } catch (t: Throwable) {
-                toast(getString(R.string.digest_failed, t.message ?: t.javaClass.simpleName))
+                ticker.cancel()
+                val msg = if (t is CancellationException || t.message == LlmDigest.CANCELLED) {
+                    getString(R.string.digest_ai_cancelled)
+                } else {
+                    getString(R.string.digest_failed, t.message ?: t.javaClass.simpleName)
+                }
+                toast(msg)
+                restore(msg)
+                if (t is CancellationException) throw t
             } finally {
                 setBusy(false, null, 0, 0)
             }
+        }
+    }
+
+    /** 取消这次 AI 整理：先掐断正在等的那趟请求，再取消协程。 */
+    private fun cancelAi() {
+        LlmDigest.cancelActive()
+        aiJob?.cancel()
+    }
+
+    /** 生成过程中把已经拿到的 Markdown 实时刷出来，看得见字在长，就不用干等进度条。 */
+    private fun showLive(text: String) {
+        if (text.isBlank()) return
+        binding.contentBox.visibility = View.GONE
+        binding.empty.visibility = View.GONE
+        binding.content.visibility = View.VISIBLE
+        binding.content.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f * Prefs.digestFontScale)
+        binding.content.text = text
+        if (autoScroll) binding.scroll.post { binding.scroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    /** 取消或失败后回到上一版（流式那几行只是预览，没有落盘）。 */
+    private fun restore(msg: String) {
+        if (markdown.isNotBlank()) show(markdown, null)
+        binding.status.text = msg
+    }
+
+    private fun setStatus(text: String) {
+        if (busy) binding.status.text = text
+    }
+
+    private fun aiStatus(): String {
+        val sec = ((System.currentTimeMillis() - aiStartedAt) / 1000).toInt()
+        return if (aiTotal > 1) {
+            getString(R.string.digest_ai_elapsed_multi, sec, aiDone, aiTotal)
+        } else {
+            getString(R.string.digest_ai_elapsed, sec)
         }
     }
 
@@ -228,7 +313,7 @@ class DigestActivity : AppCompatActivity() {
             binding.content.visibility = View.GONE
             renderer.scale = scale
             val n = if (isDemo) null else note
-            renderer.imageDir = if (n == null) null else NoteStore.shotsDir(n.id)
+            renderer.imageDir = if (n == null) null else NoteStore.noteDir(n.id)
             renderer.onImageClick = { rel -> openShot(rel) }
             renderer.render(binding.contentBox, md, binding.scroll)
         } else {
@@ -272,6 +357,10 @@ class DigestActivity : AppCompatActivity() {
             binding.progress.isIndeterminate = true
         }
         if (msg != null) binding.status.text = msg
+        binding.btnAi.text = getString(if (b) R.string.digest_ai_cancel else R.string.digest_ai_do)
+        binding.toolbar.menu.findItem(R.id.action_ai)?.isEnabled = !b
+        binding.toolbar.menu.findItem(R.id.action_rebuild)?.isEnabled = !b
+        binding.toolbar.menu.findItem(R.id.action_export)?.isEnabled = !b
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

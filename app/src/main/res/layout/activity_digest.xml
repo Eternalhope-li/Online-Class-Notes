@@ -30,6 +30,23 @@
         android:indeterminate="true"
         android:visibility="gone" />
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp"
+        android:paddingBottom="6dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnAi"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:text="@string/digest_ai_do"
+            android:textSize="13sp" />
+    </LinearLayout>
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -44,24 +61,29 @@
             android:scrollbarStyle="outsideOverlay">
 
             <LinearLayout
-                android:id="@+id/contentBox"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingTop="4dp"
-                android:paddingBottom="32dp" />
-        </ScrollView>
+                android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/content"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:lineSpacingExtra="5dp"
-            android:paddingHorizontal="16dp"
-            android:paddingBottom="28dp"
-            android:textIsSelectable="true"
-            android:textSize="13.5sp"
-            android:visibility="gone" />
+                <LinearLayout
+                    android:id="@+id/contentBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="32dp" />
+
+                <TextView
+                    android:id="@+id/content"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:lineSpacingExtra="5dp"
+                    android:paddingBottom="24dp"
+                    android:textIsSelectable="true"
+                    android:textSize="13.5sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </ScrollView>
 
         <TextView
             android:id="@+id/empty"

@@ -85,10 +85,15 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             Recorder.state.collect { st ->
                 binding.recordingBar.visibility = if (st.active) View.VISIBLE else View.GONE
-                if (st.active) {
-                    binding.recordingBar.text =
-                        getString(R.string.main_recording) + "  " + Formats.hms(st.elapsedMs)
+                val fabText = if (st.active) {
+                    val t = Formats.hms(st.elapsedMs)
+                    binding.recordingBar.text = getString(R.string.main_recording) + "  " + t
+                    getString(R.string.main_fab_recording, t)
+                } else {
+                    getString(R.string.main_start)
                 }
+                // 状态每秒都在刷，文案没变就别动它，省得 FAB 一直重新布局
+                if (binding.fab.text.toString() != fabText) binding.fab.text = fabText
             }
         }
     }

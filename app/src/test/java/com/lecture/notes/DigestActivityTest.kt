@@ -7,11 +7,13 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.button.MaterialButton
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.ui.DigestActivity
 import com.lecture.notes.ui.SettingsActivity
 import com.lecture.notes.util.Prefs
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -68,7 +70,26 @@ class DigestActivityTest {
         assertEquals(View.GONE, raw.visibility)
     }
 
+    /** 顶部那颗按钮：看得见、文案对，示例笔记点了也不会真的去联网整理。 */
     @Test
+    fun aiButtonIsVisibleAndDemoStaysReadOnly() {
+        val a = demoActivity()
+        val btn = a.findViewById<MaterialButton>(R.id.btnAi)
+        assertEquals(View.VISIBLE, btn.visibility)
+        assertEquals("用 AI 体系化整理", btn.text.toString())
+        btn.performClick()
+    }
+
+    /** Markdown 源码视图必须放在 ScrollView 里，否则长整理稿滚不动。 */
+    @Test
+    fun markdownSourceScrollsWithThePage() {
+        val a = demoActivity()
+        val raw = a.findViewById<TextView>(R.id.content)
+        val scroll = a.findViewById<android.widget.ScrollView>(R.id.scroll)
+        assertSame("源码视图应该是 ScrollView 内容的子节点", scroll.getChildAt(0), raw.parent)
+    }
+    @Test
+
     fun settingsOpens() {
         val app: Context = ApplicationProvider.getApplicationContext()
         Prefs.init(app)

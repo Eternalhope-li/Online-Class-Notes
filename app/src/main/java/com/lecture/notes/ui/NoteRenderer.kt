@@ -214,6 +214,25 @@ class NoteRenderer(context: Context) {
         }
     }
 
+    /**
+     * 找出 `![alt](src)` 对应磁盘上哪张图。
+     *
+     * 整理稿里写的是相对笔记目录的 `shots/xxx.jpg`，而界面可能把 [imageDir] 设成笔记目录、
+     * 也可能直接设成 shots 目录 —— 两种约定都认，免得图片静默变成空白框。
+     */
+    internal fun resolveImage(src: String): java.io.File? {
+        val dir = imageDir ?: return null
+        if (src.isBlank()) return null
+        val direct = java.io.File(dir, src)
+        if (direct.exists()) return direct
+        val name = src.substringAfterLast('/')
+        if (name != src) {
+            val flat = java.io.File(dir, name)
+            if (flat.exists()) return flat
+        }
+        return null
+    }
+
     /** 整理稿里的截图：圆角卡片 + 说明；点一下交给界面放大看。 */
     private fun imageView(b: Block.Image): View {
         val box = LinearLayout(ctx).apply {
@@ -229,8 +248,8 @@ class NoteRenderer(context: Context) {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
-        val file = imageDir?.let { java.io.File(it, b.src) }
-        if (file != null && file.exists()) {
+        val file = resolveImage(b.src)
+        if (file != null) {
             Thumbs.load(file, 1100, iv, b.src)
             iv.isClickable = true
             iv.setOnClickListener { onImageClick?.invoke(b.src) }

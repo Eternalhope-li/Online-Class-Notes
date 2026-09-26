@@ -12,6 +12,7 @@
     <string name="main_search_hint">搜索笔记内容</string>
     <string name="main_empty">还没有笔记\n点下面的「开始记录」，老师讲的话会自动变成文字</string>
     <string name="main_start">开始记录</string>
+    <string name="main_fab_recording">记录中 %1$s</string>
     <string name="main_recording">正在记录中，点这里回到记录页</string>
     <string name="main_settings">设置</string>
 
@@ -95,6 +96,11 @@
     <string name="digest_ai_done">AI 体系化整理完成（%1$s）</string>
     <string name="digest_ai_loading">AI 正在整理（第 %1$d/%2$d 段 · %3$s）…</string>
     <string name="digest_ai_need_key">还没配置 API Key，去「设置 → 在线整理」填一个就能用</string>
+    <string name="digest_ai_do">用 AI 体系化整理</string>
+    <string name="digest_ai_cancel">取消生成</string>
+    <string name="digest_ai_elapsed">AI 正在整理 · 已用 %1$d 秒</string>
+    <string name="digest_ai_elapsed_multi">AI 正在整理 · 已用 %1$d 秒 · 第 %2$d/%3$d 段</string>
+    <string name="digest_ai_cancelled">已取消，显示的还是上一版</string>
     <string name="digest_empty">这篇笔记还没有内容可以整理</string>
     <string name="digest_copied">已复制到剪贴板</string>
     <string name="digest_exported">已导出：%1$s</string>

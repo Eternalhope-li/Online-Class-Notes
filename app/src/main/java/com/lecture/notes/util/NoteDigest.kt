@@ -168,6 +168,9 @@ object NoteDigest {
             sb.append('\n')
         }
 
+        val shots = note.entries.filter { it.isImage && it.image != null }
+        val used = HashSet<String>()
+
         if (r.sections.isEmpty()) {
             sb.append("_这篇记录还没有足够的内容可以整理。_\n")
             sb.append(NoteStore.shotsSection(note))
@@ -184,8 +187,19 @@ object NoteDigest {
                 sb.append(e.text).append('\n')
             }
             sb.append('\n')
+            // 这段时间里截的图，紧跟在对应小节后面；比统一堆到文末好用得多
+            for (e in shots) {
+                if (e.atMs in sec.startMs..sec.endMs && used.add(e.image!!)) {
+                    sb.append(NoteStore.shotBlock(e))
+                }
+            }
         }
-        sb.append(NoteStore.shotsSection(note))
+        sb.append(
+            NoteStore.shotsSection(
+                note,
+                onlyRels = shots.mapNotNull { it.image }.filterNot { it in used }.toSet()
+            )
+        )
         return sb.toString().trim() + "\n"
     }
 

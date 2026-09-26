@@ -107,4 +107,18 @@ class NoteDigestTest {
         val (_, r) = NoteDigest.build(n)
         assertTrue("全是废话应该整理不出东西", r.sections.isEmpty())
     }
+
+    /** 截图要插在它当时所在的小节里，不能一股脑堆到文末。 */
+    @Test
+    fun screenshotLandsInItsOwnSection() {
+        val n = note(*transcript)
+        n.entries.add(Entry(76_000L, "", image = "shots/a.jpg", caption = "板书：四种遍历的顺序", analyzed = true))
+        n.entries.sortBy { it.atMs }
+        val md = NoteDigest.build(n).first
+
+        assertTrue("截图要出现在整理稿里：$md", md.contains("![课堂截图 01:16](shots/a.jpg)"))
+        assertTrue("说明文字要跟着图一起出现", md.contains("板书：四种遍历的顺序"))
+        assertTrue("截图前面应该已经有小节标题", md.substringBefore("![课堂截图 01:16]").contains("## "))
+        assertTrue("已经插进小节的图不该再堆到文末", !md.contains("本课图示"))
+    }
 }

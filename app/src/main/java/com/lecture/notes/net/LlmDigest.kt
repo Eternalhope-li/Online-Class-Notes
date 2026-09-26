@@ -1,10 +1,17 @@
 package com.lecture.notes.net
 
+import com.lecture.notes.data.Entry
 import com.lecture.notes.data.Note
+import com.lecture.notes.data.NoteStore
 import com.lecture.notes.util.Formats
 import com.lecture.notes.util.ImageUtil
 import com.lecture.notes.util.Prefs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -12,6 +19,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 可选的「AI 体系化整理」：把转写交给 OpenAI 兼容的接口，要回一份成体系的整理稿。
@@ -33,6 +42,14 @@ object LlmDigest {
     private const val CHUNK_CHARS = 2600
     private const val MERGE_CHARS = 11000
     private const val MAX_TOKENS = 3200
+    /** 素材卡只是中间产物，输出收窄能让这一轮明显更快。 */
+    private const val MATERIAL_MAX_TOKENS = 1400
+    /** 一次能发完的总字数：在这个范围内直接出终稿，省掉「素材卡 + 合并」两轮调用。 */
+    private const val SINGLE_PASS_CHARS = 7000
+    /** 分段调用的并发数：这些请求互不依赖，并行发出去省掉一大半等待。 */
+    private const val PARALLEL = 3
+    /** 流式内容推给界面的最小间隔，免得一秒刷新几十次。 */
+    private const val STREAM_PUSH_MS = 120L
     /** 视觉模型（GLM-4V-Flash 只有 4K 上下文）输出要短一点，不然输入加输出就爆了。 */
     private const val VISION_MAX_TOKENS = 1200
     private const val MAX_HEAL = 3
@@ -41,35 +58,86 @@ object LlmDigest {
 
     fun isReady(): Boolean = Prefs.llmKey.isNotBlank()
 
-    /**
-     * 整理一篇笔记。[onProgress] 的参数是（第几段, 共几段, 正在做什么）。
-     *
-     * 短课一次到位；长课先逐段整理成素材卡，再把素材卡合成一份体系化终稿，
-     * 这样几千句的长讲座也不会超出模型的上下文，而且层级和术语表是全局统一的。
-     */
-    suspend fun digest(note: Note, onProgress: (Int, Int, String) -> Unit): String =
-        withContext(Dispatchers.IO) {
-            val key = Prefs.llmKey.trim()
-            if (key.isEmpty()) throw LlmException("还没有填写 API Key")
-            val chunks = chunk(note)
-            if (chunks.isEmpty()) throw LlmException("这篇笔记还没有内容")
+    /** 取消时用的统一说法，界面据此区分「用户取消」和真的失败。 */
+    internal const val CANCELLED = "已取消"
 
-            if (chunks.size == 1) {
-                onProgress(1, 1, "体系化整理")
-                return@withContext clean(call(key, FINALIZE, chunks[0]))
-            }
+    /** 当前正在跑的那趟请求。取消时直接断开连接，正卡在等响应上的读会立刻抛错返回。 */
+    private val activeConn = AtomicReference<HttpURLConnection?>(null)
 
-            val cards = ArrayList<String>(chunks.size)
-            for ((i, c) in chunks.withIndex()) {
-                onProgress(i + 1, chunks.size, "第 ${i + 1}/${chunks.size} 段")
-                cards.add(clean(call(key, MATERIAL, c)))
-            }
-            onProgress(chunks.size, chunks.size, "体系化合并")
-            finalize(key, cards.joinToString("\n\n"))
+    @Volatile
+    private var cancelled = false
+
+    /** 单测用：看是否还留着上一次的取消标记。 */
+    internal fun isCancelled(): Boolean = cancelled
+
+    /** 从界面线程掐断正在进行的整理。 */
+    fun cancelActive() {
+        cancelled = true
+        try {
+            activeConn.getAndSet(null)?.disconnect()
+        } catch (_: Throwable) {
         }
+    }
+
+    /**
+     * 整理一篇笔记。[onProgress] 的参数是（已完成段数, 总段数, 正在做什么）。
+     * [onPartial] 非空时开启流式输出：模型每吐出一小段就回调一次**累积后**的全文，
+     * 界面可以边生成边显示，不用对着进度条干等。
+     *
+     * 提速做了三件事：
+     *  - 全篇在 [SINGLE_PASS_CHARS] 以内就直接出终稿，不再走「素材卡 + 合并」那两轮；
+     *  - 必须分段时，各段的素材卡并行发出（[PARALLEL] 个一起跑），而不是排队等；
+     *  - 素材卡这轮输出收窄到 [MATERIAL_MAX_TOKENS]，中间产物没必要写那么长。
+     */
+    suspend fun digest(
+        note: Note,
+        onProgress: (Int, Int, String) -> Unit,
+        onPartial: ((String) -> Unit)? = null
+    ): String = withContext(Dispatchers.IO) {
+        cancelled = false
+        val key = Prefs.llmKey.trim()
+        if (key.isEmpty()) throw LlmException("还没有填写 API Key")
+        val plan = plan(note)
+        if (plan.chunks.isEmpty()) throw LlmException("这篇笔记还没有内容")
+
+        // 流式回调也过一遍图片还原：边生成边看到的就是最终排版，不会闪出 [[IMG1]] 这种记号
+        val live: ((String) -> Unit)? = onPartial?.let { cb ->
+            { md: String -> cb(embedImages(md, note, appendMissing = false)) }
+        }
+
+        val body = try {
+            if (plan.singlePass) {
+                onProgress(1, 1, "体系化整理")
+                finalize(key, plan.chunks.joinToString("\n\n"), live)
+            } else {
+                segmented(key, plan, onProgress, live)
+            }
+        } catch (t: Throwable) {
+            // 模型上下文装不下整篇（小模型 / 中转站截断）时退回分段路径，别直接失败
+            if (plan.singlePass && plan.chunks.size > 1 && isTooLong(t)) {
+                segmented(key, plan, onProgress, live)
+            } else {
+                throw t
+            }
+        }
+        embedImages(body, note, appendMissing = true)
+    }
+
+    /** 长课：各段并行出素材卡，再把这些卡片合成一版终稿。 */
+    private suspend fun segmented(
+        key: String,
+        plan: Plan,
+        onProgress: (Int, Int, String) -> Unit,
+        live: ((String) -> Unit)?
+    ): String {
+        val cards = material(key, plan.chunks, onProgress)
+        onProgress(plan.chunks.size, plan.chunks.size, "体系化合并")
+        return finalize(key, cards.joinToString("\n\n"), live)
+    }
 
     /** 「测试连接」用：发一句最短的话，确认地址 / Key / 模型名都对。 */
     suspend fun ping(): String = withContext(Dispatchers.IO) {
+        cancelled = false
         val key = Prefs.llmKey.trim()
         if (key.isEmpty()) throw LlmException("还没有填写 API Key")
         call(key, "你是一个测试助手，只回复用户要求的内容，不要多说一个字。", "请只回复两个字：正常")
@@ -84,6 +152,9 @@ object LlmDigest {
      * 返回一段可以直接塞进笔记的 Markdown。
      */
     suspend fun analyzeImage(jpegBase64: String, hint: String = ""): String = withContext(Dispatchers.IO) {
+        // 取消标记是全局的：上一次整理被掐断后必须在这里清零，
+        // 否则截图分析会被残留的标记直接判成「已取消」，一张图都分析不出来。
+        cancelled = false
         val key = Prefs.llmKey.trim()
         if (key.isEmpty()) throw LlmException("还没有填写 API Key")
         if (jpegBase64.isBlank()) throw LlmException("图片是空的")
@@ -100,23 +171,62 @@ object LlmDigest {
 
     // ------------------------------------------------------------ 流程
 
-    /** 太长的素材先分组各出一版终稿，再把这些终稿合成一版，保证体系不乱。 */
-    private fun finalize(key: String, material: String): String {
-        if (material.length <= MERGE_CHARS) return clean(call(key, FINALIZE, material))
-        val parts = ArrayList<String>()
-        for (g in splitText(material, MERGE_CHARS)) parts.add(clean(call(key, FINALIZE, g)))
-        if (parts.size == 1) return parts[0]
-        return clean(call(key, MERGE, parts.joinToString("\n\n")))
+    /** 分段计划：能一趟发完就一趟发完，超过 [SINGLE_PASS_CHARS] 才走「素材卡 + 合并」。 */
+    internal class Plan(val chunks: List<String>, val singlePass: Boolean)
+
+    internal fun plan(note: Note): Plan {
+        val chunks = chunk(note)
+        val single = chunks.size <= 1 || chunks.sumOf { it.length } <= SINGLE_PASS_CHARS
+        return Plan(chunks, single)
     }
 
+    /** 太长的素材先分组各出一版终稿，再把这些终稿合成一版，保证体系不乱；分组同样并行。 */
+    private suspend fun finalize(key: String, material: String, onPartial: ((String) -> Unit)?): String {
+        if (material.length <= MERGE_CHARS) {
+            return clean(call(key, FINALIZE, material, onDelta = onPartial))
+        }
+        val drafts = inParallel(splitText(material, MERGE_CHARS)) { _, g -> clean(call(key, FINALIZE, g)) }
+        if (drafts.size == 1) return drafts[0]
+        return clean(call(key, MERGE, drafts.joinToString("\n\n"), onDelta = onPartial))
+    }
+
+    /**
+     * 逐段整理成素材卡。这些请求互不依赖，并行发出（最多 [PARALLEL] 个），
+     * 长课的整体等待大约是串行的 1/[PARALLEL]；完成顺序乱了也不影响结果 ——
+     * 返回时按下标排好，合并那一步看到的仍然是课程原本的顺序。
+     */
+    private suspend fun material(
+        key: String,
+        chunks: List<String>,
+        onProgress: (Int, Int, String) -> Unit
+    ): List<String> {
+        val done = AtomicInteger(0)
+        return inParallel(chunks) { _, c ->
+            val card = clean(call(key, MATERIAL, c, maxTokens = MATERIAL_MAX_TOKENS))
+            val n = done.incrementAndGet()
+            onProgress(n, chunks.size, "第 $n/${chunks.size} 段")
+            card
+        }
+    }
+
+    /** 并发跑一批互不依赖的请求，最多 [PARALLEL] 个同时进行，返回顺序与入参一致。 */
+    private suspend fun <T> inParallel(items: List<String>, block: suspend (Int, String) -> T): List<T> =
+        coroutineScope {
+            val gate = Semaphore(PARALLEL)
+            items.mapIndexed { i, s -> async { gate.withPermit { block(i, s) } } }.awaitAll()
+        }
+
     private fun chunk(note: Note): List<String> {
+        val marks = shotMarks(note)
         val out = ArrayList<String>()
         val sb = StringBuilder()
         for (e in note.entries) {
-            // 截图条目用它自己的说明文字顶上去，AI 才能把图里的要点也整理进小节
+            // 截图条目用它自己的说明文字顶上去，AI 才能把图里的要点也整理进小节；
+            // 前面再挂一个 [[IMGn]] 记号，模型看到就知道这里该放一张图
             val body = e.digestText
             if (body.isBlank()) continue
-            val line = "[" + Formats.mmss(e.atMs) + "] " + if (e.star) "★ " + body else body
+            val mark = e.image?.let { rel -> marks[rel]?.let { n -> "[[IMG$n]] " } }.orEmpty()
+            val line = "[" + Formats.mmss(e.atMs) + "] " + mark + if (e.star) "★ " + body else body
             if (sb.isNotEmpty() && sb.length + line.length > CHUNK_CHARS) {
                 out.add(sb.toString())
                 sb.setLength(0)
@@ -125,6 +235,43 @@ object LlmDigest {
         }
         if (sb.isNotEmpty()) out.add(sb.toString())
         return out
+    }
+
+    /** 整篇里所有截图的顺序（从 1 开始编号）。分段时各段用同一套编号，合并也不会串。 */
+    internal fun shots(note: Note): List<Entry> =
+        note.entries.filter { it.isImage && !it.image.isNullOrBlank() }
+
+    private fun shotMarks(note: Note): Map<String, Int> =
+        shots(note).withIndex().associate { (i, e) -> e.image!! to (i + 1) }
+
+    /** `[[IMG1]]` 这类记号：模型把它单独放一行，App 再换成真正的图片。 */
+    private val IMG_TOKEN = Regex("`?\\[\\[\\s*IMG\\s*(\\d+)\\s*]]`?")
+
+    /**
+     * 把整理稿里的 `[[IMGn]]` 记号换成 `![课堂截图 mm:ss](shots/x.jpg)`。
+     *
+     * [appendMissing] 为真时，模型漏放回去的截图会统一补进末尾的「本课图示」小节 ——
+     * 宁可图都堆在最后，也不能因为模型漏抄一个记号就把截图弄丢。
+     * 认不出的记号（模型自己编的编号）直接删掉，不在正文里留一串乱码。
+     */
+    internal fun embedImages(md: String, note: Note, appendMissing: Boolean): String {
+        val all = shots(note)
+        if (all.isEmpty()) return md
+        val used = HashSet<String>()
+        val body = IMG_TOKEN.replace(md) { m ->
+            val e = m.groupValues[1].toIntOrNull()?.let { all.getOrNull(it - 1) }
+            val rel = e?.image
+            if (rel == null) {
+                ""
+            } else {
+                used.add(rel)
+                "![课堂截图 " + Formats.mmss(e.atMs) + "](" + rel + ")"
+            }
+        }
+        if (!appendMissing) return body
+        val missing = all.mapNotNull { it.image }.filterNot { it in used }.toSet()
+        if (missing.isEmpty()) return body
+        return (body.trimEnd() + "\n" + NoteStore.shotsSection(note, onlyRels = missing)).trim()
     }
 
     private fun splitText(text: String, limit: Int): List<String> {
@@ -152,18 +299,23 @@ object LlmDigest {
     private class Opts(
         val temperature: Boolean = true,
         val tokens: Boolean = true,
-        val minimal: Boolean = false
+        val minimal: Boolean = false,
+        val stream: Boolean = true
     ) {
         val isMinimal: Boolean get() = minimal
-        fun withoutTemp() = Opts(false, tokens, minimal)
-        fun withoutTokens() = Opts(temperature, false, minimal)
+        fun withoutTemp() = Opts(false, tokens, minimal, stream)
+        fun withoutTokens() = Opts(temperature, false, minimal, stream)
+        fun withoutStream() = Opts(temperature, tokens, minimal, false)
     }
 
     private val MINIMAL = Opts(temperature = false, tokens = false, minimal = true)
 
     /**
      * 发一次请求，失败时按「能自愈就自愈」的顺序退让：
-     * 换路径 → 去掉不认的字段 → 换成最小请求体。
+     * 换路径 → 去掉不认的字段 → 关掉网关不支持的 stream → 换成最小请求体。
+     *
+     * [onDelta] 非空时用流式请求，模型每吐一点就回调一次累积正文；
+     * 网关不支持流式会报错，这里会自动关掉流式重发一次。
      */
     private fun call(
         key: String,
@@ -173,21 +325,33 @@ object LlmDigest {
         opts: Opts = Opts(),
         image: String? = null,
         vision: Boolean = false,
-        maxTokens: Int = MAX_TOKENS
+        maxTokens: Int = MAX_TOKENS,
+        onDelta: ((String) -> Unit)? = null
     ): String {
         val urls = endpoints()
+        val streaming = onDelta != null && opts.stream
         var last = "请求失败"
         for ((idx, url) in urls.withIndex()) {
+            var got = ""
+            val sink: ((String) -> Unit)? = if (streaming) {
+                { text -> got = text; onDelta?.invoke(text) }
+            } else {
+                null
+            }
             val pair = try {
-                http(url, key, buildBody(sys, user, opts, image, vision, maxTokens), 2)
+                http(
+                    url, key, buildBody(sys, user, opts, image, vision, maxTokens, streaming), 2, sink
+                )
             } catch (t: Throwable) {
                 last = netMessage(t)
+                if (cancelled) throw LlmException(CANCELLED)
                 if (idx == 0 && urls.size > 1) continue
                 throw LlmException(last)
             }
             val code = pair.first
             val text = pair.second
             if (code in 200..299) {
+                if (got.isNotBlank()) return got.trim()
                 val err = errorOf(text)
                 if (err != null) throw LlmException(err)
                 return contentOf(text)
@@ -195,10 +359,13 @@ object LlmDigest {
             val detail = (errorOf(text) ?: text).take(200).replace('\n', ' ')
 
             if (depth < MAX_HEAL && code in 400..422) {
+                if (streaming && looksLikeStreamError(detail)) {
+                    return call(key, sys, user, depth + 1, opts.withoutStream(), image, vision, maxTokens, onDelta)
+                }
                 val slim = slimDown(opts, detail)
-                if (slim != null) return call(key, sys, user, depth + 1, slim, image, vision, maxTokens)
+                if (slim != null) return call(key, sys, user, depth + 1, slim, image, vision, maxTokens, onDelta)
                 if (!opts.isMinimal && looksLikeToolError(detail)) {
-                    return call(key, sys, user, depth + 1, MINIMAL, image, vision, maxTokens)
+                    return call(key, sys, user, depth + 1, MINIMAL, image, vision, maxTokens, onDelta)
                 }
             }
             if (code == 404 && idx == 0 && urls.size > 1) {
@@ -232,7 +399,8 @@ object LlmDigest {
         opts: Opts,
         image: String? = null,
         vision: Boolean = false,
-        maxTokens: Int = MAX_TOKENS
+        maxTokens: Int = MAX_TOKENS,
+        stream: Boolean = false
     ): String {
         val model = if (vision) {
             Prefs.visionModel.trim().ifEmpty { Prefs.DEFAULT_VISION_MODEL }
@@ -244,7 +412,7 @@ object LlmDigest {
         if (!opts.isMinimal) {
             if (opts.temperature) j.put("temperature", 0.3)
             if (opts.tokens) j.put("max_tokens", maxTokens)
-            j.put("stream", false)
+            if (stream) j.put("stream", true)
         }
         val messages = JSONArray()
         if (sys.isNotBlank()) messages.put(JSONObject().put("role", "system").put("content", sys))
@@ -266,9 +434,16 @@ object LlmDigest {
         return j.toString()
     }
 
-    private fun http(url: String, key: String, body: String, attempts: Int): Pair<Int, String> {
+    private fun http(
+        url: String,
+        key: String,
+        body: String,
+        attempts: Int,
+        onDelta: ((String) -> Unit)? = null
+    ): Pair<Int, String> {
         var last: Throwable? = null
         for (a in 0 until attempts) {
+            if (cancelled) throw IOException(CANCELLED)
             try {
                 val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
@@ -276,12 +451,22 @@ object LlmDigest {
                     readTimeout = 240000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    setRequestProperty("Accept", "application/json")
                     setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty(
+                        "Accept",
+                        if (onDelta != null) "text/event-stream" else "application/json"
+                    )
                 }
                 try {
                     conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                    activeConn.set(conn)
                     val code = conn.responseCode
+                    if (code in 200..299 && onDelta != null &&
+                        conn.contentType.orEmpty().contains("event-stream", ignoreCase = true)
+                    ) {
+                        val streamed = readStream(conn, onDelta)
+                        if (streamed.isNotBlank()) return code to streamed
+                    }
                     val stream = if (code in 200..299) conn.inputStream else conn.errorStream
                     val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
                     if ((code == 429 || code >= 500) && a < attempts - 1) {
@@ -292,16 +477,94 @@ object LlmDigest {
                     return code to text
                 } finally {
                     try {
+                        activeConn.compareAndSet(conn, null)
                         conn.disconnect()
                     } catch (_: Throwable) {
                     }
                 }
             } catch (t: Throwable) {
                 last = t
+                if (cancelled) throw IOException(CANCELLED)
                 if (a < attempts - 1) sleep(700L * (a + 1))
             }
         }
         throw (last ?: IOException("网络请求失败"))
+    }
+
+    /**
+     * 读 SSE 流，边读边把累积正文推给界面。
+     * 中途断线时，只要已经吐出了内容就把它留下（总比白等一场强），一字未得才抛错走重试。
+     */
+    private fun readStream(conn: HttpURLConnection, onDelta: (String) -> Unit): String {
+        val sb = StringBuilder()
+        var pushed = 0L
+        try {
+            conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (cancelled) throw IOException(CANCELLED)
+                    if (!line.startsWith("data:")) continue
+                    val payload = line.substring(5).trim()
+                    if (payload.isEmpty()) continue
+                    if (payload == "[DONE]") break
+                    val delta = deltaOf(payload) ?: continue
+                    if (delta.isEmpty()) continue
+                    sb.append(delta)
+                    val now = System.currentTimeMillis()
+                    if (now - pushed >= STREAM_PUSH_MS) {
+                        pushed = now
+                        onDelta(sb.toString())
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            if (sb.isEmpty() || cancelled) throw t
+        }
+        if (sb.isNotEmpty()) onDelta(sb.toString())
+        return sb.toString()
+    }
+
+    /** 从一帧 SSE 里取出正文增量，兼容 delta / message / 纯 text 几种写法。 */
+    internal fun deltaOf(payload: String): String? {
+        val obj = try {
+            JSONObject(payload)
+        } catch (_: Throwable) {
+            return null
+        }
+        val choice = obj.optJSONArray("choices")?.optJSONObject(0) ?: return null
+        val holder = choice.optJSONObject("delta") ?: choice.optJSONObject("message")
+        if (holder == null) {
+            val t = choice.optString("text")
+            return if (t.isBlank()) null else t
+        }
+        return when (val c = holder.opt("content")) {
+            is String -> c
+            is JSONArray -> buildString {
+                for (i in 0 until c.length()) {
+                    val part = c.optJSONObject(i) ?: continue
+                    append(part.optString("text"))
+                }
+            }
+            else -> null
+        }
+    }
+
+    /** 报错像是「上下文装不下」时，说明这一趟发太长了，退回去分段整理。 */
+    private fun isTooLong(t: Throwable): Boolean {
+        val m = (t.message ?: "").lowercase()
+        return listOf(
+            "context", "too long", "too many tokens", "maximum", "length", "token",
+            "超出", "过长", "长度", "上限", "太短"
+        ).any { m.contains(it) }
+    }
+
+    /** 有些网关不支持流式，会明确报 stream。这时关掉流式重试一次。 */
+    private fun looksLikeStreamError(detail: String): Boolean {
+        val d = detail.lowercase()
+        if (!d.contains("stream")) return false
+        return listOf(
+            "support", "unsupported", "not ", "invalid", "unknown", "parameter", "不支持"
+        ).any { d.contains(it) }
     }
 
     private fun sleep(ms: Long) {
@@ -346,7 +609,7 @@ object LlmDigest {
 
     private fun netMessage(t: Throwable): String = when (t) {
         is SocketTimeoutException -> "等待超时了，网课内容较长时请保持网络稳定"
-        is IOException -> "网络不通：${t.message ?: t.javaClass.simpleName}"
+        is IOException -> if (t.message == CANCELLED) CANCELLED else "网络不通：${t.message ?: t.javaClass.simpleName}"
         else -> t.message ?: t.javaClass.simpleName
     }
 
@@ -401,22 +664,30 @@ object LlmDigest {
 
     /** 长课分段的「素材卡」：只做提取和清洗，体系化留给下一步。 */
     private val MATERIAL = """
-        你是网课笔记整理助手。下面是课堂录音的语音转写，每句带一个 [mm:ss] 时间戳，
+        你是网课笔记整理助手。下面是一段课堂录音的语音转写，每句带一个 [mm:ss] 时间戳，
         里面可能有同音字识别错误、口语废话和重复语句。
 
         请把这一段整理成「素材卡」，直接输出 Markdown，不要任何开场白、解释或结尾语：
         1. 按内容分成 1-3 个小节，每节写成 "## 小节标题"，标题不超过 14 个字；不要写 "#" 大标题；
-        2. 每节下面用 "- " 列出真正的知识点：定义、结论、公式、步骤、分类、对比、易错点、考点；
-        3. 每个要点开头保留对应时间戳，写成反引号包起来的形式，例如 `[03:12]`；
-        4. 删掉寒暄、重复和口头禅；老师强调「要记住 / 必考 / 作业」的内容必须保留；
-        5. 按上下文改正明显的同音字错误，但不要编造原文没有的内容。
+        2. 每节下面用 "- " 列出这一段真正讲到的知识点：定义、结论、公式、步骤、分类、对比、
+           成立条件、例子、易错点、考点；一条只说一件事，不要写成流水账；
+        3. 这一步只做「提取和清洗」，不要重排体系、不要合并小节，也绝不补充原文没有的内容；
+        4. 每个要点开头保留对应时间戳，写成反引号包起来的形式，例如 `[03:12]`；
+        5. 带 [[IMG1]] 这样标记的行，是老师当时展示的课件截图；请原样保留标记，
+           并把标记后面的说明当作图上已有的内容整理进对应小节；
+        6. 删掉寒暄、重复和口头禅；老师强调「要记住 / 必考 / 作业」的内容必须保留；
+        7. 按上下文改正明显的同音字错误，把没说完的话补完整，但不要编造。
     """.trimIndent()
 
     /** 体系化终稿的骨架与要求，短课一次生成、长课合并时都用它。 */
     private val SKELETON = """
         你是课程笔记的体系化编辑。下面是一堂网课的内容（语音转写或分段整理出的素材），
-        每句带 [mm:ss] 时间戳。请把它编辑成一份**成体系**的课堂笔记：结构清楚、层次分明、
-        能一眼看出这节课的框架，复习时看这一份就够了。
+        每句带 [mm:ss] 时间戳，中间可能有 [[IMG1]] 这样的截图标记。
+
+        请把它编辑成一份**成体系**的课堂笔记。判断标准只有一条：
+        **同学不看录播、只听这份笔记，也能把这节课学会。**
+        所以每个知识点都要说清「是什么、为什么、怎么用、什么情况下会错」，
+        而不是把老师说过的话压缩一遍。
 
         直接输出 Markdown，不要任何寒暄、说明或结尾语。严格按下面的骨架和顺序输出：
 
@@ -427,7 +698,9 @@ object LlmDigest {
 
         ## 一、大节标题
         ### 1.1 子知识点
-        - 要点：定义、结论、公式、步骤、分类、对比，一条一句话说清
+        - 先给结论 / 定义 / 公式，再补为什么、成立条件和适用场景
+        - 例子、推导步骤、和相邻概念的区别，一条一件事，写成完整的话
+        - 易错点单独成条：容易错在哪、正确做法是什么
         ### 1.2 子知识点
         - ……
 
@@ -450,11 +723,15 @@ object LlmDigest {
 
         要求：
         1. 层级最多三层（## / ### / -），不要用 ####，也不要自己写 "#" 大标题（标题由 App 添加）；
-        2. 保留原文的时间戳，写成反引号包起来的形式，例如 `[03:12]`，放在对应要点开头或句末；
-        3. 术语表 2-6 行，只收这节课真正出现过的术语和公式；
-        4. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
-        5. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
-        6. 全篇 400-1200 字，内容少就写短一点；某项确实没有内容就整节不写，但顺序不要变。
+        2. **不要堆标题**：一个小节下 3-6 条要点就够，把零碎的话归并成完整的句子，别一句话一个标题；
+        3. 保留原文的时间戳，写成反引号包起来的形式，例如 `[03:12]`，放在对应要点开头或句末；
+        4. 正文里出现 [[IMG1]] 这类标记时，把标记**单独放一行**插在它对应的知识点下面，
+           原样照抄标记（不要加反引号、不要改写、不要翻译），并把图上的说明融进正文；
+        5. 术语表 2-6 行，只收这节课真正出现过的术语和公式；
+        6. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
+        7. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
+        8. 笔记里只写知识本身，不要出现「这段转写」「视频里」「录音中」这类话；
+        9. 全篇 600-1400 字，内容少就写短一点；某项确实没有内容就整节不写，但顺序不要变。
     """.trimIndent()
 
     /** 单段（或素材卡）直接出终稿，用的就是骨架本身。 */
@@ -464,6 +741,7 @@ object LlmDigest {
         下面是同一堂课分几段整理出的几版笔记，内容可能有重复、小节可能对不上。
         请把它们合并成**一份**不重复、层级连贯的体系化笔记：把同一主题的要点归到同一个大节下，
         重复的小节和要点只留一条，时间戳照旧保留。
+        合并只做归并和去重：不要发明原文没有的新内容，也不要把 [[IMG1]] 这类标记弄丢或改号。
 
     """.trimIndent() + SKELETON
 
