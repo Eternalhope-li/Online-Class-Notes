@@ -14,7 +14,7 @@
 
 ## 下载
 
-不想自己编译的话，直接装打好的 APK：[**最新 Release**](https://github.com/Eternalhope-li/Online-Class-Notes/releases/latest)
+直接装打好的 APK：[**最新 Release**](https://github.com/Eternalhope-li/Online-Class-Notes/releases/latest)
 —— APK 里**已经内置识别模型**（约 285 MB），装完就能离线用，不需要再下别的东西。
 
 适用 Android 7.0（API 24）及以上，arm64-v8a / armeabi-v7a。用的是自签名证书，第一次装需要在系统里允许「安装未知来源应用」。
@@ -40,68 +40,6 @@
 | 导出分享 | 复制全文（含富文本）、分享、一键导出 Markdown + 排版 HTML 到手机「下载」目录；详情页和整理稿页都是一次给两份 |
 | 防丢 | 每识别出一句立刻追加落盘，进程被杀也只丢当前这一句 |
 | 深色模式 | 跟随系统；记录页支持三档字号 |
-
-## 快速开始
-
-### 1. 环境
-
-- **JDK 17**
-- **Android SDK**（`compileSdk 34`）：`local.properties` 里写 `sdk.dir=...`，用 Android Studio 打开会自动生成
-- Gradle 用仓库自带的 wrapper，不用另外装
-
-### 2. 先拉识别模型
-
-仓库里**没有**放语音识别模型：`model.int8.onnx` 有 228 MB，超过 GitHub 单文件 100 MB 的硬限制。
-
-```powershell
-.\tools\fetch-model.ps1        # Windows
-```
-
-```bash
-bash tools/fetch-model.sh      # macOS / Linux
-```
-
-脚本把 `model.int8.onnx` 和 `tokens.txt` 下到 `app/src/main/assets/sense-voice/`，带大小校验，中断了重跑即可（已下好的会跳过）。模型出处见文末「模型与许可」。
-
-### 3. 构建
-
-```powershell
-.\build.ps1            # 真机包（arm64-v8a + armeabi-v7a）
-.\build.ps1 -Emu       # 模拟器包（x86_64）
-```
-
-产物：`app/build/outputs/apk/release/app-release.apk`（约 285 MB —— 模型内置在 APK 里，换来的是装完就能离线用）。
-
-跑测试：
-
-```powershell
-.\gradlew.bat testReleaseUnitTest
-```
-
-覆盖本地整理算法、Markdown 解析、导出落盘，以及用 Robolectric 真的把 View 建出来的排版冒烟测试（63 条）。
-
-### 4. 装到手机
-
-```powershell
-.\verify.ps1 -Reinstall     # adb 安装 + 拉起 App + 抓 60 秒日志（崩溃 / 识别 RTF / 内存）
-```
-
-### 签名
-
-`release` 用自己生成的密钥库 `app/keystore/lecture-notes.jks`，**密钥库和口令都不入库**（`.gitignore` 已排除）。
-口令写在本机的 `local.properties` 里：
-
-```properties
-RELEASE_STORE_PASSWORD=...
-RELEASE_KEY_ALIAS=...
-RELEASE_KEY_PASSWORD=...
-```
-
-没有密钥库也能构建：`build.gradle.kts` 检测不到密钥库时会跳过签名，产物是未签名 APK。要换成自己的密钥库：
-
-```powershell
-keytool -genkeypair -v -keystore app/keystore/lecture-notes.jks -alias lecturenotes -keyalg RSA -keysize 2048 -validity 10000
-```
 
 ## 怎么用
 
@@ -172,16 +110,29 @@ lines.jsonl ─┬─ NoteDigest   本地提纲：时间 + 转折词 + 长度三
                      └─ MiniMarkdown.toHtml   导出网页版（同一套块，两种输出）
 ```
 
+## 技术栈
+
+| 层 | 用了什么 |
+|---|---|
+| 语言 / 构建 | Kotlin 1.9.24、AGP 8.5.2、Gradle 8.9、compileSdk 34 / minSdk 24 / targetSdk 34、Java 17 |
+| UI | 原生 View + ViewBinding（没有用 Compose）、Material Components、RecyclerView、ConstraintLayout，深色模式跟随系统 |
+| 异步 | Kotlin 协程 + `StateFlow` 单一状态源；采集线程 → `ArrayBlockingQueue(8)` → 单线程识别队列 |
+| 语音识别 | sherpa-onnx 1.13.8（官方预编译 AAR，放在 `app/libs/`）+ SenseVoice int8，全离线；断句用 Silero VAD v5 |
+| 音频采集 | `AudioRecord`（麦克风）与 `MediaProjection` + `AudioPlaybackCapture`（内录系统声音），统一降采样到 16 kHz 单声道 |
+| 截图 | `MediaProjection` + `VirtualDisplay` + `ImageReader` 抓单帧；悬浮圆钮用 `WindowManager` + 前台服务 + 通知栏 |
+| 存储 | 手机私有目录：`lines.jsonl` 逐句追加、截图存 `shots/*.jpg`、整理稿存 `digest.md`；导出走 `MediaStore` 落到系统「下载」 |
+| 网络 | 只用 `HttpURLConnection` + `org.json`，没引任何 HTTP / JSON 第三方库；打的是 OpenAI 兼容的 `/chat/completions`（文本整理 + 多模态看图） |
+| 排版 | 自研 `MiniMarkdown` 解析层 + 自研 `NoteRenderer`：同一套块结构同时渲染手机界面和导出 HTML，没有引 Markdown 库 |
+| 测试 | JUnit 4 + Robolectric 4.12：本地整理算法、Markdown 解析、导出落盘，以及把排版视图真的测量 / 布局 / 绘制一遍的冒烟测试，共 63 条 |
+
 ## 目录
 
 ```
 ├── app/                         Android 模块（源码 / 资源 / 内置模型）
 │   ├── libs/                    sherpa-onnx 官方预编译 AAR
-│   └── src/main/assets/         VAD 模型 + SenseVoice 模型（模型需先 fetch，见上）
-├── tools/fetch-model.ps1|.sh    拉取 228 MB 的识别模型
-├── build.ps1                    一键打 release 包
-├── verify.ps1                   装到设备 + 抓日志
-└── gradlew(.bat)                Gradle wrapper
+│   └── src/main/assets/         Silero VAD（约 0.6 MB，已入库）+ SenseVoice 识别模型
+├── PRIVACY.md                   隐私说明：数据存哪、什么情况下会联网、权限用途
+└── README.md
 ```
 
 Kotlin 源码（`app/src/main/java/com/lecture/notes/`）：
@@ -254,7 +205,7 @@ app/src/main/java/com/lecture/notes/
 5. 新增**文本清洗与重点识别**（TextPolish）：去语气词、去 ASR 复读、补标点、关键词标星。
 6. 性能改造：识别改为**单线程串行队列**（原 Demo 每段 `launch` 一个协程，顺序和线程数都不可控）、
    VAD 参数针对长讲座调优、模型常驻 + 静音预热、线程数可调（1–4）。
-7. 工程化：AGP 8.5.2 / Gradle 8.9 / compileSdk 34、签名打包、模型直接内置进 APK（无需联网下载）。
+7. 工程化：签名打包 + 模型直接内置进 APK —— 装完就能离线用，不需要联网下模型。
 8. 新增**知识点笔记整理引擎**（`NoteDigest`）：时间 + 转折词 + 长度三重分段，
    逐句打分（术语密度 / 定义与因果信号 / 数字 / 口语铺垫扣分）挑要点，
    再用**左右邻接熵**抽术语（专门解决中文没有分词器时把「储结构」「中序遍」这种半个词抽出来的问题）。
@@ -273,7 +224,7 @@ app/src/main/java/com/lecture/notes/
     自动补全、404 自动换拼法、服务商不认 `temperature` / `max_tokens` 就去掉重试、
     网关把请求当成「带 tool_calls 的会话」返回报错时自动退化成最小请求体再试一次，
     429 / 5xx / 网络抖动会退避重试，实在不行也会给出人话提示而不是把原始报错甩出来。
-14. 测试：`testReleaseUnitTest` 里除了本地整理算法，还会用 Robolectric 把整理稿真的渲染一遍
+14. 测试：除了本地整理算法，还会用 Robolectric 把整理稿真的渲染一遍
     （走一遍测量 / 布局 / 绘制），防止排版代码一开就崩；设置页新增「排版预览」，不用录音也能看排版。
 15. 新增**悬浮截图**（`ShotService` + `ShotGate`）：一个能拖动、贴边、记位置的悬浮圆钮，
     点一下就把当前屏幕截进笔记。截屏走 `MediaProjection` + `VirtualDisplay` + `ImageReader` 抓单帧，
@@ -299,7 +250,7 @@ app/src/main/java/com/lecture/notes/
 ## 模型与许可
 
 - 识别引擎：sherpa-onnx 1.13.8（Apache-2.0），通过官方预编译 AAR 引入（`app/libs/`）
-- 识别模型：`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` int8，约 228 MB。**未入库**（超 GitHub 单文件上限），用 `tools/fetch-model.*` 拉取
+- 识别模型：`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` int8，约 228 MB —— APK 的体积主要就是它，发布版里已经内置（源码仓库不放这个文件，超 GitHub 单文件 100 MB 上限）
 - 静音检测：Silero VAD v5（约 0.6 MB，已入库）
 - 本仓库代码同样按 Apache-2.0 使用
 
