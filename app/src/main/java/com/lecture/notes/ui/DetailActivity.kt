@@ -57,6 +57,8 @@ class DetailActivity : AppCompatActivity() {
         binding.list.adapter = adapter
         binding.btnCancelEdit.setOnClickListener { setEditing(false) }
         binding.btnSaveEdit.setOnClickListener { saveEdit() }
+        // 整理稿入口放在页面上，而不是只藏在右上角的菜单里：这是这页最值得点的东西
+        binding.btnDigest.setOnClickListener { handleMenu(R.id.action_digest) }
 
         val id = intent.getStringExtra(EXTRA_ID)
         lifecycleScope.launch {
@@ -85,6 +87,10 @@ class DetailActivity : AppCompatActivity() {
         )
         adapter.submitRows(n.entries.map { rowOf(n, it) })
         binding.empty.visibility = if (n.entries.isEmpty()) View.VISIBLE else View.GONE
+        // 已经有整理稿就直接说「看整理稿」，没有才说「整理成知识点笔记」—— 按钮自己讲清楚会做什么
+        binding.btnDigest.text = getString(
+            if (NoteStore.hasDigest(n.id)) R.string.detail_digest_view else R.string.detail_digest
+        )
     }
 
     private fun rowOf(n: Note, e: Entry): Row = Row(

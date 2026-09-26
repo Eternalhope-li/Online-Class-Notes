@@ -265,6 +265,9 @@ object LlmDigest {
     /** `[[IMG1]]` 这类记号：模型把它单独放一行，App 再换成真正的图片。 */
     private val IMG_TOKEN = Regex("`?\\[\\[\\s*IMG\\s*(\\d+)\\s*]]`?")
 
+    /** 正文里的 `[mm:ss]`，用来判断某张截图该落在哪句话下面。 */
+    private val TS_RE = Regex("\\[(\\d{1,2}):(\\d{2})]")
+
     /**
      * 把整理稿里的 `[[IMGn]]` 记号换成 `![课堂截图 mm:ss](shots/x.jpg)`。
      *
@@ -287,9 +290,47 @@ object LlmDigest {
             }
         }
         if (!appendMissing) return body
-        val missing = all.mapNotNull { it.image }.filterNot { it in used }.toSet()
+        val missing = all.filter { it.image != null && it.image !in used }
         if (missing.isEmpty()) return body
-        return (body.trimEnd() + "\n" + NoteStore.shotsSection(note, onlyRels = missing)).trim()
+        // 模型漏放记号的图，按时间戳插到「当时正在讲它的那句话」下面；
+        // 实在找不到时间戳（模型没照要求保留）才退回文末的「本课图示」兜底
+        val placed = placeMissing(body, missing)
+        if (placed != null) return placed
+        return (body.trimEnd() + "\n" +
+            NoteStore.shotsSection(note, onlyRels = missing.mapNotNull { it.image }.toSet())).trim()
+    }
+
+    /**
+     * 把模型漏放记号的截图，插到时间上最贴近它的那一行后面。
+     *
+     * 整理稿里每个要点都带着 `[mm:ss]`，截图也知道自己是什么时候截的，所以「这张图该放哪」
+     * 其实是个能算出来的问题：挑出时间戳不大于截图时间、且最靠后的那一行，图就插在它下面。
+     * 比正文第一句还早的，插在第一句带时间戳的话前面。
+     * 整篇一行时间戳都没有就返回 null，交给调用方退回文末汇总 —— 图丢了比位置差严重得多。
+     */
+    private fun placeMissing(body: String, missing: List<Entry>): String? {
+        val lines = body.split('\n').toMutableList()
+        if (lines.none { tsOf(it) >= 0 }) return null
+        for (e in missing.sortedBy { it.atMs }) {
+            val want = (e.atMs / 1000L).toInt()
+            var at = -1
+            for (i in lines.indices) {
+                val t = tsOf(lines[i])
+                if (t in 0..want) at = i
+            }
+            if (at < 0) at = lines.indexOfFirst { tsOf(it) >= 0 } - 1
+            val block = NoteStore.shotBlock(e).trimEnd().split('\n')
+            lines.addAll(at + 1, block)
+            lines.add(at + 1 + block.size, "")
+        }
+        return lines.joinToString("\n").trim()
+    }
+
+    /** 一行里 `[mm:ss]` 的时间戳换成秒；这行没有时间戳就返回 -1。 */
+    private fun tsOf(line: String): Int {
+        val m = TS_RE.find(line) ?: return -1
+        return (m.groupValues[1].toIntOrNull() ?: return -1) * 60 +
+            (m.groupValues[2].toIntOrNull() ?: return -1)
     }
 
     private fun splitText(text: String, limit: Int): List<String> {
@@ -763,7 +804,7 @@ object LlmDigest {
         1. 层级最多三层（## / ### / -），不要用 ####，也不要自己写 "#" 大标题（标题由 App 添加）；
         2. **不要堆标题**：一个小节下 3-6 条要点就够，把零碎的话归并成完整的句子，别一句话一个标题；
         3. 保留原文的时间戳，写成反引号包起来的形式，例如 `[03:12]`，放在对应要点开头或句末；
-        4. 正文里出现 [[IMG1]] 这类标记时，把标记**单独放一行**插在它对应的知识点下面，
+        4. 正文里出现 [[IMG1]] 这类标记时，把标记**单独放一行**插在它**对应时间戳那句话的下面**，
            原样照抄标记（不要加反引号、不要改写、不要翻译），并把图上的说明融进正文；
         5. 术语表 2-6 行，只收这节课真正出现过的术语和公式；
         6. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；

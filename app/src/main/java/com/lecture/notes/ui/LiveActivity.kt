@@ -182,7 +182,9 @@ class LiveActivity : AppCompatActivity() {
             val id = st.noteId ?: CaptureService.lastStoppedNoteId
             navigated = true
             if (id != null) {
-                startActivity(Intent(this, DetailActivity::class.java).putExtra(DetailActivity.EXTRA_ID, id))
+                // 录完最想看的是「整理好的笔记」，不是原始转写：直接去整理稿页（打开就地做本地整理），
+                // 从那儿返回才是详情页 —— 把「保存 → 整理 → 阅读」串成一步，少点一次
+                startActivity(Intent(this, DigestActivity::class.java).putExtra(DetailActivity.EXTRA_ID, id))
             }
             finish()
         }

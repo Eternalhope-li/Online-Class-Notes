@@ -120,5 +120,13 @@ class NoteDigestTest {
         assertTrue("说明文字要跟着图一起出现", md.contains("板书：四种遍历的顺序"))
         assertTrue("截图前面应该已经有小节标题", md.substringBefore("![课堂截图 01:16]").contains("## "))
         assertTrue("已经插进小节的图不该再堆到文末", !md.contains("本课图示"))
+        // 图要落在「当时正在讲它的那句话」下面，而不是整节的末尾
+        val lines = md.lines()
+        val at = lines.indexOfFirst { it.contains("![课堂截图 01:16]") }
+        assertTrue("图应该落在正文里：$md", at > 0)
+        assertTrue(
+            "图应该紧跟在上一条要点后面，实际上一行是：" + lines[at - 1],
+            lines[at - 1].startsWith("- `[")
+        )
     }
 }

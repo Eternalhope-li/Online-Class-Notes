@@ -132,18 +132,29 @@ class MainActivity : AppCompatActivity() {
             val list = withContext(Dispatchers.IO) {
                 if (q.isBlank()) NoteStore.listMeta() else NoteStore.search(q)
             }
-            adapter.submit(list)
-            binding.empty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+            showList(list, q)
         }
+    }
+
+    /**
+     * 列表和它上面那行统计一起更新。
+     *
+     * 首页本来就是「我的笔记」列表（搜索框下面就是），这里补一行「共 N 篇 / 找到 N 篇」，
+     * 让「保存下来的笔记都在哪」一目了然 —— 之前只有一列卡片，没有任何计数。
+     */
+    private fun showList(list: List<NoteStore.Meta>, query: String) {
+        adapter.submit(list)
+        binding.empty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+        binding.notesCount.text = getString(
+            if (query.isBlank()) R.string.main_notes_count else R.string.main_notes_hit, list.size
+        )
     }
 
     private fun refresh() {
         lifecycleScope.launch {
             val list = withContext(Dispatchers.IO) { NoteStore.listMeta() }
-            if (binding.search.text.isNullOrBlank()) {
-                adapter.submit(list)
-                binding.empty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
-            }
+            val q = binding.search.text?.toString().orEmpty()
+            if (q.isBlank()) showList(list, q)
         }
     }
 
@@ -152,13 +163,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun noteMenu(meta: NoteStore.Meta) {
-        val items = arrayOf(getString(R.string.detail_rename), getString(R.string.detail_delete))
+        val items = arrayOf(
+            getString(R.string.detail_digest_view),
+            getString(R.string.detail_rename),
+            getString(R.string.detail_delete)
+        )
         AlertDialog.Builder(this)
             .setTitle(meta.title)
             .setItems(items) { _, which ->
                 when (which) {
-                    0 -> renameDialog(meta)
-                    1 -> AlertDialog.Builder(this)
+                    // 长按就能直接看整理稿：整理稿才是用户真正想读的东西，别逼人先进详情页翻菜单
+                    0 -> startActivity(
+                        Intent(this, DigestActivity::class.java).putExtra(DetailActivity.EXTRA_ID, meta.id)
+                    )
+                    1 -> renameDialog(meta)
+                    2 -> AlertDialog.Builder(this)
                         .setMessage(R.string.detail_delete_msg)
                         .setPositiveButton(R.string.common_ok) { _, _ ->
                             NoteStore.delete(meta.id)

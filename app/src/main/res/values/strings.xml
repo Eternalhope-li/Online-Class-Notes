@@ -11,6 +11,11 @@
 
     <string name="main_search_hint">搜索笔记内容</string>
     <string name="main_empty">还没有笔记\n点下面的「开始记录」，老师讲的话会自动变成文字</string>
+    <string name="main_notes_count">我的笔记 · 共 %1$d 篇</string>
+    <string name="main_notes_hit">搜索到 %1$d 篇</string>
+    <string name="main_digested">已整理</string>
+    <string name="shot_analyze_queue">排队分析课件截图…</string>
+    <string name="detail_digest_view">看整理稿</string>
     <string name="main_start">开始记录</string>
     <string name="main_fab_recording">记录中 %1$s</string>
     <string name="main_recording">正在记录中，点这里回到记录页</string>
@@ -44,7 +49,7 @@
     <string name="detail_delete">删除</string>
     <string name="detail_delete_msg">删除后无法恢复，确定删除这篇笔记吗？</string>
     <string name="detail_copied">已复制到剪贴板</string>
-<string name="export_done_two">已导出：%1$s　和　%2$s</string>
+    <string name="export_done_two">已导出到同一个文件夹：\n%1$s\n%2$s</string>
     <string name="detail_export_failed">导出失败：%1$s</string>
     <string name="detail_meta">%1$s · %2$s · %3$d 句 · %4$d 字 · 重点 %5$d 处</string>
     <string name="detail_plain_hint">每行开头的时间戳（如 [01:23]）请保留，方便对应课程进度</string>

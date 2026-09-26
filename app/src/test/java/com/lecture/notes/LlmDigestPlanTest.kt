@@ -102,6 +102,22 @@ class LlmDigestPlanTest {
         return n
     }
 
+    /** 模型漏放记号的图，也要按时间戳落回「当时那句话」下面，而不是堆到文末。 */
+    @Test
+    fun missingShotLandsUnderTheLineItFollows() {
+        val md = LlmDigest.embedImages(
+            "## 一、二叉树\n\n- `[00:10]` 讲定义\n- `[01:20]` 讲遍历\n- `[02:00]` 讲性质\n",
+            shotNote(),
+            appendMissing = true
+        )
+        val lines = md.lines()
+        val bullet = lines.indexOfFirst { it.contains("[00:10]") }
+        val image = lines.indexOfFirst { it.contains("![课堂截图") }
+        assertTrue("截图应该被插回正文：$md", image > bullet)
+        assertTrue("截图应该紧跟那句话，而不是堆到文末：$md", image - bullet <= 2)
+        assertTrue("时间戳够用的时候不该再退回文末汇总：$md", !md.contains("本课图示"))
+    }
+
     @Test
     fun screenshotMarkerRidesWithTheChunk() {
         val chunk = LlmDigest.plan(shotNote()).chunks[0]

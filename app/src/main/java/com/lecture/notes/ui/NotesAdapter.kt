@@ -5,6 +5,7 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.lecture.notes.R
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ItemNoteBinding
 import com.lecture.notes.util.Formats
@@ -28,6 +29,7 @@ class NotesAdapter(
         parts.add("${m.count} 句")
         if (m.stars > 0) parts.add("重点 ${m.stars}")
         if (m.images > 0) parts.add("图 ${m.images}")
+        if (m.hasDigest) parts.add(holder.b.root.context.getString(R.string.main_digested))
         holder.b.meta.text = parts.joinToString(" · ")
         holder.b.preview.text = m.preview.ifBlank { "（没有识别到内容）" }
         holder.b.root.setOnClickListener { onClick(m) }
@@ -45,7 +47,8 @@ class NotesAdapter(
 
             override fun areContentsTheSame(a: NoteStore.Meta, b: NoteStore.Meta) =
                 a.title == b.title && a.count == b.count && a.durationMs == b.durationMs &&
-                        a.stars == b.stars && a.preview == b.preview && a.images == b.images
+                a.stars == b.stars && a.preview == b.preview && a.images == b.images &&
+                        a.hasDigest == b.hasDigest
         }
     }
 }

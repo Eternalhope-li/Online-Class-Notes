@@ -181,18 +181,22 @@ object NoteDigest {
             sb.append("## ").append(CN_NUM.getOrElse(i) { "${i + 1}" }).append("、").append(sec.title)
             sb.append("　`").append(Formats.mmss(sec.startMs)).append("-")
                 .append(Formats.mmss(sec.endMs)).append("`\n\n")
-            for (e in sec.bullets) {
-                sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` ")
-                if (e.star) sb.append("**★** ")
-                sb.append(e.text).append('\n')
-            }
-            sb.append('\n')
-            // 这段时间里截的图，紧跟在对应小节后面；比统一堆到文末好用得多
-            for (e in shots) {
-                if (e.atMs in sec.startMs..sec.endMs && used.add(e.image!!)) {
-                    sb.append(NoteStore.shotBlock(e))
+            // 这一节的要点、和这一节里截的图，按时间戳合成一条时间线来排：
+            // 图就落在「当时正在讲它的那句话」下面，而不是整节末尾堆一堆
+            val merged = ArrayList<Entry>(sec.bullets.size + 4)
+            merged.addAll(sec.bullets)
+            merged.addAll(shots.filter { e -> e.atMs in sec.startMs..sec.endMs })
+            merged.sortBy { it.atMs }
+            for (e in merged) {
+                if (e.isImage) {
+                    if (used.add(e.image!!)) sb.append(NoteStore.shotBlock(e))
+                } else {
+                    sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` ")
+                    if (e.star) sb.append("**★** ")
+                    sb.append(e.text).append('\n')
                 }
             }
+            sb.append('\n')
         }
         sb.append(
             NoteStore.shotsSection(

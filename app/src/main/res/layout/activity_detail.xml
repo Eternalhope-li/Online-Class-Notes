@@ -11,6 +11,17 @@
         android:layout_height="?attr/actionBarSize"
         app:menu="@menu/detail"             app:navigationIconTint="?attr/colorOnSurface"/>
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnDigest"
+        style="?attr/materialButtonOutlinedStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginBottom="4dp"
+        android:minWidth="0dp"
+        android:text="@string/detail_digest"
+        app:icon="@drawable/ic_ai" />
+
     <TextView
         android:id="@+id/meta"
         android:layout_width="match_parent"

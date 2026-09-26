@@ -14,7 +14,8 @@
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
             android:title="@string/app_name"
-            app:menu="@menu/main"             app:navigationIconTint="?attr/colorOnSurface"/>
+        app:menu="@menu/main"
+        app:navigationIconTint="?attr/colorOnSurface" />
 
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
@@ -39,6 +40,15 @@
                 android:textSize="15sp"
                 android:autofillHints="" />
         </com.google.android.material.card.MaterialCardView>
+
+        <TextView
+            android:id="@+id/notesCount"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:alpha="0.7"
+            android:paddingHorizontal="18dp"
+            android:paddingBottom="4dp"
+            android:textSize="13sp" />
 
         <TextView
             android:id="@+id/recordingBar"

@@ -38,6 +38,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.math.abs
 
 /**
@@ -62,6 +64,9 @@ class ShotService : Service() {
     private var started = false
     private var capturing = false
     private var waitRetries = 0
+
+    /** 一次只送一张图给视觉模型：连拍时排队，别把免费额度和手机内存一起打爆。 */
+    private val analyzeLock = Mutex()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -394,16 +399,26 @@ class ShotService : Service() {
         }, HIDE_BEFORE_GRAB_MS)
     }
 
+    /**
+     * 把一张截图交给视觉模型看懂。
+     *
+     * 串行执行：一下连拍五六张时，并发打出去的请求会互相挤免费额度（429），
+     * 同时好几份 base64 摆在内存里对手机也不友好。排队等的时候界面上说一句，
+     * 别让人以为点了没反应。
+     */
     private suspend fun analyze(id: String, atMs: Long, rel: String, base64: String, title: String) {
-        bubble(getString(R.string.shot_analyzing))
-        try {
-            val caption = LlmDigest.analyzeImage(base64, title)
-            if (caption.isBlank()) throw LlmDigest.LlmException("模型没有返回内容")
-            NoteStore.setImageCaption(id, atMs, rel, caption, true)
-            bubble(getString(R.string.shot_analyzed))
-        } catch (t: Throwable) {
-            NoteStore.setImageCaption(id, atMs, rel, "", false)
-            bubble(getString(R.string.shot_analyze_failed, t.message ?: t.javaClass.simpleName))
+        if (analyzeLock.isLocked) bubble(getString(R.string.shot_analyze_queue))
+        analyzeLock.withLock {
+            bubble(getString(R.string.shot_analyzing))
+            try {
+                val caption = LlmDigest.analyzeImage(base64, title)
+                if (caption.isBlank()) throw LlmDigest.LlmException("模型没有返回内容")
+                NoteStore.setImageCaption(id, atMs, rel, caption, true)
+                bubble(getString(R.string.shot_analyzed))
+            } catch (t: Throwable) {
+                NoteStore.setImageCaption(id, atMs, rel, "", false)
+                bubble(getString(R.string.shot_analyze_failed, t.message ?: t.javaClass.simpleName))
+            }
         }
     }
 

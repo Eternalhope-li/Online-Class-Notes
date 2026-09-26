@@ -81,6 +81,9 @@ class ExportTest {
         assertTrue(File(mdPath).exists())
         assertTrue(File(htmlPath).exists())
 
+        // 两份文件（和 shots/）要在同一个文件夹里：打开「下载」一眼就能看出它们是一套
+        assertEquals("md 和 html 应该放在同一个文件夹", File(mdPath).parentFile, File(htmlPath).parentFile)
+
         val html = File(htmlPath).readText(Charsets.UTF_8)
         assertTrue("HTML 应该内嵌 base64 图片", html.contains(ImageUtil.DATA_HEAD))
         assertFalse("HTML 是单文件，不该再有相对路径", html.contains("](shots/"))

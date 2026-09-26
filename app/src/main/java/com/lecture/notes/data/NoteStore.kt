@@ -291,8 +291,16 @@ object NoteStore {
         val chars: Int,
         val stars: Int,
         val preview: String,
-        val images: Int = 0
+        val images: Int = 0,
+        /** 这篇是否已经有整理稿。首页卡片上直接标出来，省得每篇都点进去找。 */
+        val hasDigest: Boolean = false
     )
+
+    /** 有没有整理稿（只看文件在不在，够快，主线程也能用）。 */
+    fun hasDigest(id: String): Boolean {
+        val f = digestFile(id)
+        return f.exists() && f.length() > 0L
+    }
 
     fun listMeta(): List<Meta> {
         val dirs = root.listFiles() ?: return emptyList()
@@ -311,7 +319,8 @@ object NoteStore {
                     chars = j.optInt("chars"),
                     stars = j.optInt("stars"),
                     preview = j.optString("preview"),
-                    images = j.optInt("imgs")
+                    images = j.optInt("imgs"),
+                    hasDigest = hasDigest(j.optString("id", d.name))
                 )
             )
         }
@@ -499,7 +508,7 @@ object NoteStore {
      */
     fun exportMarkdown(ctx: Context, note: Note): String {
         val name = fileName(note, "md")
-        val folder = name.removeSuffix(".md")
+        val folder = exportFolder(note)
         // md 和 shots/ 放进同一个子目录，md 里的相对路径 ![图示](shots/x.jpg) 才能正常显示。
         // MIME 必须是 text/markdown：MediaStore 会按 MIME 补后缀，写 text/plain 会被存成 .md.txt。
         val where = writeDownload(ctx, name, "text/markdown", fullMarkdown(note), folder)
@@ -507,7 +516,12 @@ object NoteStore {
         return where
     }
 
-    /** 一次导出两份：Markdown（图片放在同级 shots/ 目录）和排好版的 HTML（图片内嵌，单文件）。 */
+    /**
+     * 一次导出两份：Markdown（整理稿 + 原始转写，图片放在同级 shots/）和排好版的 HTML（图片内嵌，单文件）。
+     *
+     * 两份和 `shots/` 都落在**同一个**「下载/<笔记名-时间>/」里 —— 以前 HTML 散在下载根目录、
+     * markdown 在子目录里，打开「下载」看到的是一堆文件，谁能想到它们是一套。
+     */
     fun exportAll(ctx: Context, note: Note, markdown: String?): Pair<String, String> {
         val mdPath = exportMarkdown(ctx, note)
         val htmlPath = exportHtml(ctx, note, markdown)
@@ -566,9 +580,13 @@ object NoteStore {
     fun exportHtml(ctx: Context, note: Note, markdown: String?): String {
         val md = if (!markdown.isNullOrBlank()) markdown else (readDigest(note.id) ?: markdown(note))
         return writeDownload(
-            ctx, fileName(note, "html"), "text/html", MiniMarkdown.toHtml(inlineImages(note, md), note.title)
+            ctx, fileName(note, "html"), "text/html",
+            MiniMarkdown.toHtml(inlineImages(note, md), note.title), exportFolder(note)
         )
     }
+
+    /** 一次导出用的文件夹名：`.md`、`.html`、`shots/` 都放进去，打开一个文件夹就是全套。 */
+    private fun exportFolder(note: Note): String = fileName(note, "md").removeSuffix(".md")
 
     /** 排好版的 HTML 正文（分享时一并带上，接收方能保留排版）。 */
     fun digestHtml(note: Note, markdown: String?): String {
