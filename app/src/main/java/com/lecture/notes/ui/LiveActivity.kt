@@ -1,12 +1,15 @@
 package com.lecture.notes.ui
 
+import android.app.Activity
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -15,6 +18,8 @@ import androidx.recyclerview.widget.RecyclerView
 import com.lecture.notes.R
 import com.lecture.notes.core.CaptureService
 import com.lecture.notes.core.Recorder
+import com.lecture.notes.core.ShotGate
+import com.lecture.notes.core.ShotService
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ActivityLiveBinding
 import com.lecture.notes.util.Formats
@@ -29,6 +34,18 @@ class LiveActivity : AppCompatActivity() {
     private var autoScroll = true
     private var navigated = false
     private var wasActive = false
+
+    /** 记录页的截图：还没有录屏授权时先要一次，拿到之后圆钮也会一起挂出来。 */
+    private val projectionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            if (result.resultCode == Activity.RESULT_OK && data != null) {
+                ShotService.start(this, result.resultCode, data)
+                binding.btnShot.postDelayed({ ShotService.capture(this) }, 400)
+            } else {
+                toast(getString(R.string.toast_projection_denied))
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +79,7 @@ class LiveActivity : AppCompatActivity() {
             toast(getString(R.string.star_marker))
         }
         binding.btnStop.setOnClickListener { confirmStop() }
+        binding.btnShot.setOnClickListener { shot() }
 
         if (Prefs.keepScreenOn) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -70,6 +88,28 @@ class LiveActivity : AppCompatActivity() {
         lifecycleScope.launch {
             Recorder.state.collect { render(it) }
         }
+    }
+
+    /**
+     * 记录页的「课件截图」。
+     *
+     * 有授权就直接让悬浮截图服务抓一帧（和点圆钮完全一样），还没有授权就先要一次。
+     * 一个 App 只能有一个 MediaProjection，内录正在用的时候不能重新申请，
+     * 所以那种情况只提示、不弹框，免得把正在录的声音掐断。
+     */
+    private fun shot() {
+        if (ShotGate.isReady()) {
+            ShotService.start(this)
+            ShotService.capture(this)
+            toast(getString(R.string.shot_capturing))
+            return
+        }
+        if (Prefs.audioSource == Prefs.SOURCE_INTERNAL) {
+            toast(getString(R.string.live_shot_need_grant))
+            return
+        }
+        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        projectionLauncher.launch(mgr.createScreenCaptureIntent())
     }
 
     private fun confirmStop() {

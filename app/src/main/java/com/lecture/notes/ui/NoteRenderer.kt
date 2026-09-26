@@ -90,11 +90,12 @@ class NoteRenderer(context: Context) {
             }
             if (b is Block.Heading && b.level == 2) {
                 section++
-                val (_, title) = MiniMarkdown.splitOrdinal(b.text)
+                val (ordinal, title) = MiniMarkdown.splitOrdinal(b.text)
                 val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
                 val wrap = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
-                    addView(sectionHeader(section, title, body))
+                    addView(sectionHeader(ordinal?.let { cnNumber(it) }, title, body))
+                    addView(sectionDivider())
                     addView(body)
                 }
                 container.addView(wrap)
@@ -135,7 +136,15 @@ class NoteRenderer(context: Context) {
         return box
     }
 
-    private fun sectionHeader(num: Int, title: String, body: LinearLayout): View {
+    /**
+     * 大节标题。
+     *
+     * [badge] 是这一节的编号：正文大节用它的中文序号（一、二、……），
+     * 「本课知识框架 / 术语与公式」这类固定栏目不给编号，改用一根主色竖条。
+     * 以前一律按出现顺序编号，结果「框架」被编成第 1 节、正文的「一、」反而成了第 2 节，
+     * 序号和标题对不上，一眼看过去就是乱的。
+     */
+    private fun sectionHeader(badge: String?, title: String, body: LinearLayout): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -146,14 +155,19 @@ class NoteRenderer(context: Context) {
                 setBackgroundResource(out.resourceId)
             }
         }
-        val badge = TextView(ctx).apply {
-            text = num.toString()
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f * scale)
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            background = roundBg(primary, 7f)
-            includeFontPadding = false
+        val badgeView: View = if (badge == null) {
+            // 没有序号的栏目（知识框架、术语表……）不编造数字，用竖条表示「这是一节」
+            View(ctx).apply { background = roundBg(primary, 2f) }
+        } else {
+            TextView(ctx).apply {
+                text = badge
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f * scale)
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                background = roundBg(primary, 7f)
+                includeFontPadding = false
+            }
         }
         val label = tv(17.5f, onSurface, true).apply {
             this.text = title
@@ -165,7 +179,7 @@ class NoteRenderer(context: Context) {
             layoutParams = LinearLayout.LayoutParams(dp(20f), ViewGroup.LayoutParams.WRAP_CONTENT)
             gravity = Gravity.END
         }
-        row.addView(badge, LinearLayout.LayoutParams(dp(22f), dp(22f)))
+        row.addView(badgeView, LinearLayout.LayoutParams(dp(22f), dp(22f)))
         row.addView(label)
         row.addView(chev)
         row.setOnClickListener {
@@ -176,21 +190,40 @@ class NoteRenderer(context: Context) {
         return row
     }
 
+    /** 大节标题下面那条细线：每一节的边界一眼可见。 */
+    private fun sectionDivider(): View = View(ctx).apply {
+        setBackgroundColor(blend(outline, 0.45f))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, max(1, dp(0.7f))
+        ).apply { bottomMargin = dp(6f) }
+    }
+
     private fun subHeading(text: String, level: Int): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(if (level == 3) 14f else 10f), 0, dp(4f))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(if (level == 3) 16f else 10f), 0, dp(5f))
         }
         if (level == 3) {
-            val dot = View(ctx).apply { background = roundBg(primary, 3f) }
-            row.addView(dot, LinearLayout.LayoutParams(dp(6f), dp(6f)).apply {
-                marginStart = dp(2f)
-                marginEnd = dp(8f)
-                topMargin = dp(9f)
+            // 左边一根竖条：三级标题一眼就能和普通要点区分开
+            val bar = View(ctx).apply { background = roundBg(primary, 2f) }
+            row.addView(bar, LinearLayout.LayoutParams(dp(3f), dp(15f)).apply {
+                marginStart = dp(1f)
+                marginEnd = dp(9f)
+            })
+        }
+        // 「1.1」这种小节号单独用主色标出来，标题本身就不必再连着一串数字，看着清爽
+        val (ordinal, head) = if (level == 3) MiniMarkdown.splitOrdinal(text) else null to text
+        if (ordinal != null) {
+            row.addView(tv(13f, primary, true).apply {
+                this.text = ordinal
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dp(8f) }
             })
         }
         val t = tv(if (level == 3) 15.5f else 14.5f, if (level == 3) onSurface else onVariant, true).apply {
-            this.text = rich(text)
+            this.text = rich(head)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         row.addView(t)
@@ -273,7 +306,7 @@ class NoteRenderer(context: Context) {
     private fun bulletRow(text: String, depth: Int, marker: String?): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(2f), 0, dp(2f))
+            setPadding(0, dp(3f), 0, dp(3f))
         }
         val body = text.trimStart().removePrefix("★").trim()
         val starred = text.trimStart().startsWith("★")
@@ -290,7 +323,7 @@ class NoteRenderer(context: Context) {
         glyph.layoutParams = LinearLayout.LayoutParams(if (marker != null) dp(22f) else dp(15f), ViewGroup.LayoutParams.WRAP_CONTENT)
         val content = tv(sizeSp, onSurface).apply {
             this.text = rich(body)
-            setLineSpacing(dp(3f).toFloat(), 1f)
+            setLineSpacing(dp(4f).toFloat(), 1f)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = dp(7f + depth * 14f)
             }
@@ -474,6 +507,24 @@ class NoteRenderer(context: Context) {
 
     // ------------------------------------------------------------------ 行内
 
+    /**
+     * 「一」「十二」这种中文序号换成阿拉伯数字，好塞进 22dp 的小徽标里。
+     * 认不出来（模型写了别的花样）就原样返回，宁可丑一点也不能把序号弄丢。
+     */
+    private fun cnNumber(s: String): String {
+        val t = s.trim()
+        if (t.isEmpty() || t.all { it.isDigit() }) return t
+        val d = "零一二三四五六七八九"
+        return when {
+            t == "十" -> "10"
+            t.length == 2 && t[0] == '十' && t[1] in d -> "1" + d.indexOf(t[1])
+            t.length == 2 && t[1] == '十' && t[0] in d -> d.indexOf(t[0]).toString() + "0"
+            t.length == 3 && t[1] == '十' && t[0] in d && t[2] in d ->
+                d.indexOf(t[0]).toString() + d.indexOf(t[2])
+            else -> t
+        }
+    }
+
     /** 把整理稿的行内记号变成带样式的文字：加粗、行内代码胶囊、时间戳胶囊、星标。 */
     private fun rich(text: String): CharSequence {
         val sb = SpannableStringBuilder()
@@ -494,8 +545,9 @@ class NoteRenderer(context: Context) {
                 }
                 is Span.Time -> {
                     sb.append(s.text)
+                    // 时间戳是「回头翻录播」用的索引，不该跟知识点抢注意力：灰底灰字、比正文略小
                     sb.setSpan(
-                        PillSpan(blend(primary, if (isDark) 0.28f else 0.16f), primary, true, 0.92f, true),
+                        PillSpan(blend(onSurface, if (isDark) 0.10f else 0.06f), onVariant, true, 0.84f),
                         start, sb.length, SPAN_FLAG
                     )
                 }

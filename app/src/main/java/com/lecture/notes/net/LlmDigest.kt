@@ -42,12 +42,26 @@ object LlmDigest {
     private const val CHUNK_CHARS = 2600
     private const val MERGE_CHARS = 11000
     private const val MAX_TOKENS = 3200
+    /**
+     * 终稿一轮的输出上限。
+     *
+     * 提示词只要求 500-900 字，给到 2400 token 已经很宽裕；卡住上限是为了防跑飞 ——
+     * 模型一旦开始长篇复述，输出越长越慢，而用户要的是能复习的提纲，不是课堂实录。
+     */
+    private const val FINAL_MAX_TOKENS = 2400
     /** 素材卡只是中间产物，输出收窄能让这一轮明显更快。 */
-    private const val MATERIAL_MAX_TOKENS = 1400
-    /** 一次能发完的总字数：在这个范围内直接出终稿，省掉「素材卡 + 合并」两轮调用。 */
-    private const val SINGLE_PASS_CHARS = 7000
+    private const val MATERIAL_MAX_TOKENS = 900
+    /**
+     * 一次能发完的总字数：在这个范围内直接出终稿，省掉「素材卡 + 合并」两轮调用。
+     *
+     * 两万字差不多是一节两小时课的转写量，现在的默认模型（glm-4-flash 128K 上下文、
+     * deepseek-chat 64K）都装得下。走一趟和走两趟的差别是实打实的：
+     * 常见的一节课从「素材卡 + 合并」变成一次调用，等待时间差不多砍一半。
+     * 万一模型上下文不够，会报「超长」并自动退回分段路径，不会直接失败。
+     */
+    private const val SINGLE_PASS_CHARS = 20000
     /** 分段调用的并发数：这些请求互不依赖，并行发出去省掉一大半等待。 */
-    private const val PARALLEL = 3
+    private const val PARALLEL = 6
     /** 流式内容推给界面的最小间隔，免得一秒刷新几十次。 */
     private const val STREAM_PUSH_MS = 120L
     /** 视觉模型（GLM-4V-Flash 只有 4K 上下文）输出要短一点，不然输入加输出就爆了。 */
@@ -183,11 +197,15 @@ object LlmDigest {
     /** 太长的素材先分组各出一版终稿，再把这些终稿合成一版，保证体系不乱；分组同样并行。 */
     private suspend fun finalize(key: String, material: String, onPartial: ((String) -> Unit)?): String {
         if (material.length <= MERGE_CHARS) {
-            return clean(call(key, FINALIZE, material, onDelta = onPartial))
+            return clean(call(key, FINALIZE, material, maxTokens = FINAL_MAX_TOKENS, onDelta = onPartial))
         }
-        val drafts = inParallel(splitText(material, MERGE_CHARS)) { _, g -> clean(call(key, FINALIZE, g)) }
+        val drafts = inParallel(splitText(material, MERGE_CHARS)) { _, g ->
+            clean(call(key, FINALIZE, g, maxTokens = FINAL_MAX_TOKENS))
+        }
         if (drafts.size == 1) return drafts[0]
-        return clean(call(key, MERGE, drafts.joinToString("\n\n"), onDelta = onPartial))
+        return clean(
+            call(key, MERGE, drafts.joinToString("\n\n"), maxTokens = FINAL_MAX_TOKENS, onDelta = onPartial)
+        )
     }
 
     /**
@@ -288,11 +306,31 @@ object LlmDigest {
         return out
     }
 
-    /** 模型有时会自作主张加 "# 大标题"，标题由 App 自己加，这里统一去掉。 */
-    private fun clean(md: String): String = md.lines()
-        .filterNot { it.trimStart().startsWith("# ") }
-        .joinToString("\n")
-        .trim()
+    /**
+     * 把模型吐出来的 Markdown 收干净。
+     *
+     * 除了干掉模型自作主张的 "# 大标题"（标题由 App 加），还顺手做三件排版上的事：
+     * 把 "####" 压回三级（层级最多三层）、给标题行前面补空行（不然标题会跟上一段粘在一起
+     * 变成正文）、把连续空行并成一个。这些都不改变内容，只让排版结果稳定可控。
+     */
+    private fun clean(md: String): String {
+        val out = StringBuilder()
+        var blanks = 0
+        for (raw in md.replace("\r\n", "\n").replace('\r', '\n').lines()) {
+            val line = raw.trimEnd()
+            if (line.isBlank()) {
+                blanks++
+                continue
+            }
+            val t = line.trimStart()
+            if (t.startsWith("# ")) continue
+            val heading = t.startsWith("##")
+            if (heading && out.isNotEmpty() && blanks == 0) out.append('\n')
+            blanks = 0
+            out.append(if (t.startsWith("####")) "### " + t.trimStart('#').trim() else line).append('\n')
+        }
+        return out.toString().trim()
+    }
 
     // ------------------------------------------------------------ HTTP
 
@@ -731,7 +769,9 @@ object LlmDigest {
         6. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
         7. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
         8. 笔记里只写知识本身，不要出现「这段转写」「视频里」「录音中」这类话；
-        9. 全篇 600-1400 字，内容少就写短一点；某项确实没有内容就整节不写，但顺序不要变。
+        9. **全篇 500-900 字**：这是在写复习用的提纲，不是课堂实录。每个要点一句话说完，
+           不复述老师原话、不写铺垫、不做名词解释的堆砌；内容少就写更短，
+           某项确实没有内容就整节不写，但顺序不要变。
     """.trimIndent()
 
     /** 单段（或素材卡）直接出终稿，用的就是骨架本身。 */

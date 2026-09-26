@@ -447,6 +447,20 @@ object NoteStore {
         }
     }
 
+    /**
+     * 整理稿是不是已经跟不上笔记了。
+     *
+     * 典型场景：先看了一眼整理稿，接着又截了几张课件图 —— 转写文件比整理稿新，
+     * 这时再打开整理稿看到的还是旧的（图当然「没有」）。用到的时间戳留 1 秒余量，
+     * 免得文件系统的秒级精度把它误判成「刚更新过」。
+     */
+    fun digestStale(id: String): Boolean {
+        val d = digestFile(id)
+        if (!d.exists()) return false
+        val lines = linesFile(id)
+        return lines.exists() && lines.lastModified() > d.lastModified() + 1000
+    }
+
     fun readDigest(id: String): String? = try {
         val f = digestFile(id)
         if (f.exists() && f.length() > 0L) f.readText(Charsets.UTF_8) else null

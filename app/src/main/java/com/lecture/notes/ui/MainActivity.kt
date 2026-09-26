@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -22,6 +23,7 @@ import com.lecture.notes.R
 import com.lecture.notes.core.CaptureService
 import com.lecture.notes.core.Recorder
 import com.lecture.notes.core.ShotGate
+import com.lecture.notes.core.ShotService
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ActivityMainBinding
 import com.lecture.notes.util.Formats
@@ -49,10 +51,28 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 CaptureService.start(this, Prefs.SOURCE_INTERNAL, result.resultCode, result.data)
+                attachShotBall()
                 openLive()
                 toast(getString(R.string.toast_started))
             } else {
                 toast(getString(R.string.toast_projection_denied))
+            }
+        }
+
+    /**
+     * 纯麦克风录音开始前的截图授权。
+     *
+     * 拿到就顺手把悬浮圆钮挂出来；用户点了拒绝也照样开始录音 —— 截图只是锦上添花，
+     * 不能因为它把记录拦下来。
+     */
+    private val shotLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            CaptureService.start(this, Prefs.audioSource)
+            openLive()
+            toast(getString(R.string.toast_started))
+            if (result.resultCode == Activity.RESULT_OK && data != null) {
+                ShotService.start(this, result.resultCode, data)
             }
         }
 
@@ -187,14 +207,16 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
 
+    /** Android 13 起通知要单独授权，没有它「AI 整理完通知你」那条路就是断的。 */
+    private fun needsNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+
     private fun askPermissions() {
         val need = ArrayList<String>(2)
         if (!hasMic()) need.add(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-                    PackageManager.PERMISSION_GRANTED
-            if (!granted) need.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        if (needsNotificationPermission()) need.add(Manifest.permission.POST_NOTIFICATIONS)
         if (need.isNotEmpty()) permissionLauncher.launch(need.toTypedArray())
     }
 
@@ -208,18 +230,31 @@ class MainActivity : AppCompatActivity() {
             askPermissions()
             return
         }
+        // 麦克风早就给过了、通知权限却还没要过：以前只在「缺麦克风」那一支里顺带申请，
+        // 于是升级上来的用户永远等不到「整理好了」那条通知。这里补上。
+        if (needsNotificationPermission()) askPermissions()
         val source = Prefs.audioSource
         if (source == Prefs.SOURCE_INTERNAL && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // 悬浮截图已经拿过录屏授权了就直接共用：一个 App 只能有一个 MediaProjection，
             // 再申请一次会把人家正在用的那个掐掉。
             if (ShotGate.isReady()) {
                 CaptureService.start(this, source)
+                attachShotBall()
                 openLive()
                 toast(getString(R.string.toast_started))
                 return
             }
             val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projectionLauncher.launch(mgr.createScreenCaptureIntent())
+            return
+        }
+        // 纯麦克风录音本身不需要录屏授权，但截屏必须要。既然「开始记录就该有截图按钮」，
+        // 就把这一次授权并进「开始记录」这一步：用户拒绝也不影响录音，只是少一个圆钮。
+        if (Prefs.autoShot && !ShotGate.isReady() && Settings.canDrawOverlays(this) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        ) {
+            val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            shotLauncher.launch(mgr.createScreenCaptureIntent())
             return
         }
         CaptureService.start(this, source)
@@ -229,6 +264,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun openLive() {
         startActivity(Intent(this, LiveActivity::class.java))
+    }
+
+    /**
+     * 开始记录之后顺手把悬浮截图圆钮挂出来。
+     *
+     * 用户要的是「开了记录就有截图按钮」，而不是再去设置里单独开一次。录屏授权本来就
+     * 只会在开启记录时申请一次（内录要用），截图直接用同一个，所以这里不会再弹授权框。
+     * 用的是纯麦克风、或者还没给悬浮窗权限，就安静跳过 —— 记录页里那颗「课件截图」
+     * 按钮照样能截。
+     */
+    private fun attachShotBall() {
+        if (!Prefs.autoShot) return
+        if (!Settings.canDrawOverlays(this)) return
+        lifecycleScope.launch {
+            // 内录的 MediaProjection 是服务起来之后才登记的，等它登记好再挂圆钮
+            var waited = 0
+            while (!ShotGate.isReady() && waited < 2000) {
+                delay(100)
+                waited += 100
+            }
+            if (ShotGate.isReady()) ShotService.start(this@MainActivity)
+        }
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

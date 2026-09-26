@@ -61,6 +61,7 @@ class ShotService : Service() {
     private var bubbleView: View? = null
     private var started = false
     private var capturing = false
+    private var waitRetries = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -107,6 +108,14 @@ class ShotService : Service() {
         }
         // 录音已经在用录屏授权了就直接复用，别再申请一次（系统会把上一次掐掉）
         val shared = if (reuse) ShotGate.current() else null
+        if (reuse && shared == null && waitRetries < 5) {
+            // 录音那边是 startForegroundService 拉起来的，MediaProjection 可能还没登记完。
+            // 稍等一下再来一次（不阻塞主线程），别抢跑导致截图按钮一闪就没了。
+            waitRetries++
+            handler.postDelayed({ begin(intent) }, 250)
+            return
+        }
+        waitRetries = 0
         if (shared == null && (resultCode != Activity.RESULT_OK || resultData == null)) {
             Prefs.shotFloat = false
             stopSelf()
@@ -488,6 +497,11 @@ class ShotService : Service() {
 
         fun stop(ctx: Context) {
             ctx.startService(Intent(ctx, ShotService::class.java).setAction(ACTION_STOP))
+        }
+
+        /** 让正在跑的悬浮按钮立刻截一张（记录页那颗「课件截图」走的就是这条）。 */
+        fun capture(ctx: Context) {
+            ctx.startService(Intent(ctx, ShotService::class.java).setAction(ACTION_CAPTURE))
         }
     }
 }

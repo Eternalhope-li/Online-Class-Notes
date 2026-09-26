@@ -10,20 +10,16 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.lecture.notes.R
+import com.lecture.notes.core.DigestJob
 import com.lecture.notes.data.Note
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ActivityDigestBinding
 import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.util.DemoNote
-import com.lecture.notes.util.Formats
 import com.lecture.notes.util.MiniMarkdown
 import com.lecture.notes.util.NoteDigest
 import com.lecture.notes.util.Prefs
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -44,10 +40,10 @@ class DigestActivity : AppCompatActivity() {
     private var busy = false
     private var isAi = false
     private var isDemo = false
-    private var aiJob: Job? = null
-    private var aiStartedAt = 0L
-    private var aiDone = 0
-    private var aiTotal = 0
+    /** 本页面发起的那次后台整理，进度才往这个页面上回馈。 */
+    private var aiWatch = false
+    /** 开场那一版整理稿读完了没（onResume 靠它避免抢跑）。 */
+    private var loaded = false
     private var autoScroll = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,12 +60,18 @@ class DigestActivity : AppCompatActivity() {
         binding.toolbar.menu.findItem(R.id.action_view)?.title =
             getString(if (Prefs.digestRich) R.string.digest_view_raw else R.string.digest_view_rich)
 
-        // 顶部那颗按钮：平时是「用 AI 体系化整理」，跑起来就变成「取消生成」
-        binding.btnAi.setOnClickListener { if (busy) cancelAi() else runAi() }
+        // 顶部那颗按钮：平时是「用 AI 体系化整理」，后台正在整理这篇时变成「取消生成」
+        binding.btnAi.setOnClickListener {
+            if (DigestJob.isRunning(note?.id)) DigestJob.cancel() else if (!busy) runAi()
+        }
+        binding.btnStaleUpdate.setOnClickListener { updateStale() }
         binding.scroll.setOnScrollChangeListener { _, _, _, _, _ ->
             // 用户往上翻看前面内容时就别再自动往下滚了
             autoScroll = !binding.scroll.canScrollVertically(1)
         }
+
+        // 后台整理任务的进度：只给一条干净的状态，模型半成品的文字一律不往用户眼前刷
+        lifecycleScope.launch { DigestJob.state.collect { onJobState(it) } }
 
         if (intent.getBooleanExtra(EXTRA_DEMO, false)) {
             isDemo = true
@@ -80,23 +82,62 @@ class DigestActivity : AppCompatActivity() {
 
         val id = intent.getStringExtra(DetailActivity.EXTRA_ID)
         lifecycleScope.launch {
-            val n = withContext(Dispatchers.IO) {
-                if (id == null) null else NoteStore.load(id)
-            }
+            val n = withContext(Dispatchers.IO) { if (id == null) null else NoteStore.load(id) }
             if (n == null) {
                 toast(getString(R.string.detail_empty))
                 finish()
                 return@launch
             }
             note = n
+            if (DigestJob.isRunning(n.id)) aiWatch = true
+            bindNote()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 后台任务可能在别的页面（或从通知）跑完了，回到这里对一下磁盘上的版本
+        val n = note ?: return
+        if (isDemo || !loaded) return
+        // 从别的页面（或从通知）回来时，这篇笔记的后台整理可能还在跑：
+        // 接上进度，别让页面看起来像「什么都没发生」。
+        if (DigestJob.isRunning(n.id)) aiWatch = true
+        lifecycleScope.launch {
             val saved = withContext(Dispatchers.IO) { NoteStore.readDigest(n.id) }
-            if (!saved.isNullOrBlank()) {
+            if (!saved.isNullOrBlank() && saved != markdown) {
                 isAi = saved.contains(getString(R.string.digest_tag_ai))
                 show(saved, getString(R.string.digest_saved_status))
-            } else {
-                rebuild()
             }
         }
+    }
+
+    /**
+     * 决定开场看哪一版整理稿。
+     *
+     *  - 还没有整理稿 → 立刻做一份本地整理（毫秒级、不联网）；
+     *  - 有整理稿，但笔记在那之后又新增了内容（多半是新截的课件图）→ 本地整理稿直接重做；
+     *    AI 整理稿只在顶上提示「有新内容」，要不要再花一次 token 由用户自己决定。
+     */
+    private fun bindNote() {
+        val n = note ?: return
+        lifecycleScope.launch {
+            val saved = withContext(Dispatchers.IO) { NoteStore.readDigest(n.id) }
+            val stale = withContext(Dispatchers.IO) { NoteStore.digestStale(n.id) }
+            isAi = !saved.isNullOrBlank() && saved.contains(getString(R.string.digest_tag_ai))
+            loaded = true
+            if (saved.isNullOrBlank() || (stale && !isAi)) {
+                rebuild()
+                return@launch
+            }
+            show(saved, getString(R.string.digest_saved_status))
+            binding.staleBar.visibility = if (stale) View.VISIBLE else View.GONE
+        }
+    }
+
+    /** 顶上「有新内容」那条：AI 整理稿就再跑一次，本地整理稿就地重做。 */
+    private fun updateStale() {
+        binding.staleBar.visibility = View.GONE
+        if (isAi) runAi() else rebuild()
     }
 
     // ------------------------------------------------------------ 本地整理
@@ -112,6 +153,7 @@ class DigestActivity : AppCompatActivity() {
                 val r = pair.second
                 withContext(Dispatchers.IO) { NoteStore.saveDigest(n.id, md) }
                 isAi = false
+                binding.staleBar.visibility = View.GONE
                 show(
                     md,
                     getString(R.string.digest_local_done, r.rawCount, r.sections.size, r.keptCount)
@@ -132,110 +174,79 @@ class DigestActivity : AppCompatActivity() {
             return
         }
         val n = note ?: return
-        if (busy) return
+        if (DigestJob.isRunning()) {
+            if (DigestJob.isRunning(n.id)) {
+                DigestJob.cancel()
+                toast(getString(R.string.digest_ai_cancelled))
+            } else {
+                toast(getString(R.string.digest_ai_busy))
+            }
+            return
+        }
         if (!LlmDigest.isReady()) {
             toast(getString(R.string.digest_ai_need_key))
             startActivity(Intent(this, SettingsActivity::class.java))
             return
         }
-        aiStartedAt = System.currentTimeMillis()
-        aiDone = 0
-        aiTotal = 0
-        setBusy(true, getString(R.string.digest_ai_start), 0, 0)
-        aiJob = lifecycleScope.launch {
-            val ticker = launch {
-                while (isActive) {
-                    delay(500)
-                    setStatus(aiStatus())
-                }
-            }
-            try {
-                val body = LlmDigest.digest(
-                    n,
-                    onProgress = { done, total, _ ->
-                        aiDone = done
-                        aiTotal = total
-                        runOnUiThread {
-                            if (busy) {
-                                setBusy(true, null, done, total)
-                                setStatus(aiStatus())
-                            }
-                        }
-                    },
-                    onPartial = { text -> runOnUiThread { if (busy) showLive(text) } }
-                )
-                ticker.cancel()
-                // 截图会按 [[IMGn]] 记号还原进正文；模型漏放的图由 LlmDigest 补在末尾的「本课图示」里
-                val md = header(n, getString(R.string.digest_tag_ai)) + body + "\n"
-                withContext(Dispatchers.IO) { NoteStore.saveDigest(n.id, md) }
-                isAi = true
-                show(md, getString(R.string.digest_ai_done, Prefs.llmModel))
-            } catch (t: Throwable) {
-                ticker.cancel()
-                val msg = if (t is CancellationException || t.message == LlmDigest.CANCELLED) {
-                    getString(R.string.digest_ai_cancelled)
-                } else {
-                    getString(R.string.digest_failed, t.message ?: t.javaClass.simpleName)
-                }
-                toast(msg)
-                restore(msg)
-                if (t is CancellationException) throw t
-            } finally {
+        // 交给进程级的后台任务：用户可以立刻退出这个页面，整理完发通知
+        aiWatch = true
+        if (DigestJob.start(n)) toast(getString(R.string.digest_ai_background))
+        else aiWatch = false
+    }
+
+    /**
+     * 后台任务的进度 / 结果。
+     *
+     * 只有「本页面发起的那一次」才回馈到界面上 —— 别处（通知、别的笔记）发起的任务，
+     * 让通知去说话，不要在这个页面上突然冒出进度。
+     */
+    private fun onJobState(st: DigestJob.State) {
+        val n = note ?: return
+        if (!aiWatch || st.noteId != n.id) return
+        when (st.phase) {
+            DigestJob.Phase.RUNNING -> setBusy(true, aiStatus(st.done, st.total), st.done, st.total)
+            DigestJob.Phase.DONE -> {
+                aiWatch = false
+                DigestJob.consume()
                 setBusy(false, null, 0, 0)
+                reload(getString(R.string.digest_ai_done, Prefs.llmModel))
             }
+
+            DigestJob.Phase.FAILED -> {
+                aiWatch = false
+                val msg = st.message.ifBlank { getString(R.string.digest_ai_cancelled) }
+                DigestJob.consume()
+                setBusy(false, null, 0, 0)
+                restore(msg)
+                toast(msg)
+            }
+
+            DigestJob.Phase.IDLE -> Unit
         }
     }
 
-    /** 取消这次 AI 整理：先掐断正在等的那趟请求，再取消协程。 */
-    private fun cancelAi() {
-        LlmDigest.cancelActive()
-        aiJob?.cancel()
+    /** 重新读磁盘上的整理稿并渲染（后台任务写完盘之后靠它把结果接上）。 */
+    private fun reload(status: String?) {
+        val n = note ?: return
+        lifecycleScope.launch {
+            val saved = withContext(Dispatchers.IO) { NoteStore.readDigest(n.id) }
+            if (saved.isNullOrBlank()) return@launch
+            isAi = saved.contains(getString(R.string.digest_tag_ai))
+            binding.staleBar.visibility = View.GONE
+            show(saved, status)
+        }
     }
 
-    /** 生成过程中把已经拿到的 Markdown 实时刷出来，看得见字在长，就不用干等进度条。 */
-    private fun showLive(text: String) {
-        if (text.isBlank()) return
-        binding.contentBox.visibility = View.GONE
-        binding.empty.visibility = View.GONE
-        binding.content.visibility = View.VISIBLE
-        binding.content.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f * Prefs.digestFontScale)
-        binding.content.text = text
-        if (autoScroll) binding.scroll.post { binding.scroll.fullScroll(View.FOCUS_DOWN) }
+    private fun aiStatus(done: Int, total: Int): String = if (total > 1) {
+        getString(R.string.digest_ai_running_multi, done, total)
+    } else {
+        getString(R.string.digest_ai_running_page)
     }
 
-    /** 取消或失败后回到上一版（流式那几行只是预览，没有落盘）。 */
+    /** 失败或取消后回到上一版（后台任务没写盘，磁盘上还是旧的那份）。 */
     private fun restore(msg: String) {
         if (markdown.isNotBlank()) show(markdown, null)
         binding.status.text = msg
-    }
-
-    private fun setStatus(text: String) {
-        if (busy) binding.status.text = text
-    }
-
-    private fun aiStatus(): String {
-        val sec = ((System.currentTimeMillis() - aiStartedAt) / 1000).toInt()
-        return if (aiTotal > 1) {
-            getString(R.string.digest_ai_elapsed_multi, sec, aiDone, aiTotal)
-        } else {
-            getString(R.string.digest_ai_elapsed, sec)
-        }
-    }
-
-    /** 整理稿的开头：标题 + 元信息 + 本课关键词（AI 的终稿同样接在这后面）。 */
-    private fun header(n: Note, tag: String): String {
-        val sb = StringBuilder()
-        sb.append("# ").append(n.title).append("\n\n")
-        sb.append("> ").append(Formats.dateTime(n.createdAt))
-            .append("　时长 ").append(Formats.hms(n.durationMs))
-            .append("　共 ").append(n.entries.size).append(" 句（").append(tag).append("）\n\n")
-        val kw = NoteDigest.terms(n.entries, 16)
-        if (kw.isNotEmpty()) {
-            sb.append("## 本课关键词\n\n")
-            for (k in kw) sb.append('`').append(k).append("` ")
-            sb.append("\n\n")
-        }
-        return sb.toString()
     }
 
     // ------------------------------------------------------------ 菜单

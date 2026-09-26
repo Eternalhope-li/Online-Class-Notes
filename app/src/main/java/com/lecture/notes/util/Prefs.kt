@@ -69,6 +69,11 @@ object Prefs {
         get() = sp.getBoolean("shot_float", false)
         set(v) = sp.edit().putBoolean("shot_float", v).apply()
 
+    /** 开始记录时自动把悬浮截图圆钮挂出来（不用再单独去设置里开一次）。 */
+    var autoShot: Boolean
+        get() = sp.getBoolean("auto_shot", true)
+        set(v) = sp.edit().putBoolean("auto_shot", v).apply()
+
     /** 截完自动丢给视觉模型分析。 */
     var shotAutoAnalyze: Boolean
         get() = sp.getBoolean("shot_auto_analyze", true)

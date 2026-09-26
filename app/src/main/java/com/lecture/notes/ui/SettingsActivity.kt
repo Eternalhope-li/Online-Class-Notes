@@ -151,6 +151,9 @@ class SettingsActivity : AppCompatActivity() {
             if (checked) enableShot() else disableShot()
         }
 
+        binding.autoShot.isChecked = Prefs.autoShot
+        binding.autoShot.setOnCheckedChangeListener { _, v -> Prefs.autoShot = v }
+
         binding.shotAuto.isChecked = Prefs.shotAutoAnalyze
         binding.shotAuto.setOnCheckedChangeListener { _, v -> Prefs.shotAutoAnalyze = v }
 

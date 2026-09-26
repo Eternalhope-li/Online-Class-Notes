@@ -55,9 +55,9 @@ class LlmDigestPlanTest {
 
     @Test
     fun longLectureFallsBackToMaterialCards() {
-        val text = "这是一个知识点的句子，用来占位置凑字数。".repeat(600)
+        val text = "这是一个知识点的句子，用来占位置凑字数。".repeat(1400)
         val p = LlmDigest.plan(note(text, parts = 10))
-        assertFalse("一万多字的长课必须分段整理", p.singlePass)
+        assertFalse("两万字以上的长课必须分段整理", p.singlePass)
         assertTrue("应该被切成多段，实际 ${p.chunks.size} 段", p.chunks.size >= 4)
         assertTrue("每段都要有内容", p.chunks.all { it.isNotBlank() })
     }

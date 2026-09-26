@@ -10,7 +10,8 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
         android:title="@string/live_title"
-        app:menu="@menu/live"             app:navigationIconTint="?attr/colorOnSurface"/>
+        app:menu="@menu/live"
+        app:navigationIconTint="?attr/colorOnSurface" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -44,13 +45,31 @@
             android:layout_marginTop="10dp"
             android:max="100" />
 
-        <TextView
-            android:id="@+id/count"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:alpha="0.7"
-            android:textSize="13sp" />
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/count"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:alpha="0.7"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnShot"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:text="@string/live_shot"
+                android:textSize="13sp"
+                app:icon="@drawable/ic_shot" />
+        </LinearLayout>
     </LinearLayout>
 
     <FrameLayout

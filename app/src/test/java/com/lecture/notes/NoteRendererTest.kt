@@ -57,7 +57,8 @@ class NoteRendererTest {
         assertTrue("应该有内容", root.childCount > 5)
         assertTrue("时间戳要点丢了", t.any { it.contains("[00:09]") })
         assertTrue("章节标题丢了", t.any { it == "二叉树的定义与性质" })
-        assertTrue("子知识点丢了", t.any { it == "1.1 定义" })
+        assertTrue("三级标题的小节号应该单独成一块", t.any { it == "1.1" })
+        assertTrue("子知识点正文丢了", t.any { it == "定义" })
         assertTrue("表格单元格丢了", t.any { it == "2^(i-1)" })
         assertTrue("关键词胶囊丢了", t.any { it == "链式存储" })
         assertEquals("表头应该是两格", 2, t.count { it == "术语 / 公式" || it == "含义" })
@@ -85,8 +86,9 @@ class NoteRendererTest {
             row.isClickable && row.childCount == 3 &&
                 (row.getChildAt(1) as? TextView)?.text?.toString() == "本课知识框架"
         }
+        // wrap 里依次是：标题行 → 分隔线 → 正文，正文永远排在最后
         val wrap = header.parent as ViewGroup
-        val body = wrap.getChildAt(1)
+        val body = wrap.getChildAt(wrap.childCount - 1)
         assertEquals(View.VISIBLE, body.visibility)
         header.performClick()
         assertEquals(View.GONE, body.visibility)

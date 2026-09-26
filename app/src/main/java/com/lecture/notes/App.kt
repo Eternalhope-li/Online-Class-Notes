@@ -35,11 +35,22 @@ class App : Application() {
             channel.setShowBadge(false)
             channel.enableVibration(false)
             nm.createNotificationChannel(channel)
+
+            // 后台整理：跑的时候安静地待着，整理好这一条要能弹出来让人知道
+            val digest = NotificationChannel(
+                CHANNEL_DIGEST,
+                getString(R.string.channel_digest),
+                NotificationManager.IMPORTANCE_DEFAULT
+            )
+            digest.description = getString(R.string.channel_digest_desc)
+            digest.setShowBadge(true)
+            nm.createNotificationChannel(digest)
         }
     }
 
     companion object {
         const val CHANNEL_RECORDING = "recording"
+        const val CHANNEL_DIGEST = "digest"
 
         lateinit var instance: App
             private set
