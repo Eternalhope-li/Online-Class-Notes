@@ -112,18 +112,18 @@ class LlmDigestPlanTest {
         return n
     }
 
-    /** 截图按时间戳落回「当时那句话」下面，而不是堆到文末。 */
+    /** 截图落在时间上最贴近的那条要点下面（比它早的、晚的都算），而不是堆到文末。 */
     @Test
-    fun shotLandsUnderTheLineItFollows() {
+    fun shotLandsUnderTheNearestLine() {
         val md = LlmDigest.embedImages(
             "## 一、二叉树\n\n- `[00:10]` 讲定义\n- `[01:20]` 讲遍历\n- `[02:00]` 讲性质\n",
             shotNote()
         )
         val lines = md.lines()
-        val bullet = lines.indexOfFirst { it.contains("[00:10]") }
+        val near = lines.indexOfFirst { it.contains("[01:20]") }
         val image = lines.indexOfFirst { it.contains("![课堂截图") }
-        assertTrue("截图应该被插回正文：$md", image > bullet)
-        assertTrue("截图应该紧跟那句话，而不是堆到文末：$md", image - bullet <= 2)
+        assertTrue("截图要插回正文：$md", image > 0)
+        assertTrue("截图要跟着最贴近的那条要点：$md", image - near <= 2)
         assertTrue("时间戳够用的时候不该再退回文末汇总：$md", !md.contains("本课图示"))
     }
 
@@ -143,12 +143,16 @@ class LlmDigestPlanTest {
         assertFalse("都放回正文了就不该再有末尾汇总", md.contains("本课图示"))
     }
 
-    /** 图旁边要带着它自己的看图说明，不能只剩一张孤零零的图。 */
+    /**
+     * 图片进正文时只放图本身：图上讲了什么由 AI 整理进周围的要点里，
+     * 不再把视觉模型的原文照抄在图下面（同一件事在笔记里出现两遍，而且那还是一段没整理过的话）。
+     */
     @Test
-    fun shotKeepsItsCaptionNextToIt() {
+    fun imageGoesInAloneWithoutTheRawCaption() {
         val md = LlmDigest.embedImages("## 一、二叉树\n\n- `[00:10]` 讲定义\n", shotNote())
-        assertTrue("说明要跟图在一起：$md", md.contains("课件：二叉树定义"))
-        assertTrue("说明要带自己的时间戳：$md", md.contains("`[01:05]`"))
+        assertTrue("图要在正文里：$md", md.contains("![课堂截图 01:05](shots/a.jpg)"))
+        assertFalse("视觉模型的原文不该原样贴在图下面：$md", md.contains("课件：二叉树定义"))
+        assertFalse("也不该留一段带时间戳的说明块：$md", md.contains("`[01:05]`"))
     }
 
     /** 老提示词留下的 [[IMGn]] / [图示] 记号要擦干净，别出现在成品里。 */
@@ -197,6 +201,42 @@ class LlmDigestPlanTest {
         assertTrue("截图行的时间戳不能丢：$chunk", chunk.contains("[01:05]"))
     }
 
+    /** 图上识别出的每一条都要单占一行喂给模型：压成一行，模型只会吃掉第一句。 */
+    @Test
+    fun captionLinesGoAsTheirOwnBlock() {
+        val n = Note("t", "测试课", 0L, 0L, 0L, "mic")
+        n.entries.add(Entry(1000L, "讲 ARP"))
+        n.entries.add(
+            Entry(
+                65_000L, "", image = "shots/a.jpg", analyzed = true,
+                caption = "- 交换机按 MAC 地址表转发\n- 接口1 MAC BL:AC:K0"
+            )
+        )
+        val chunk = LlmDigest.plan(n).chunks[0]
+        assertTrue("第一条要进素材：$chunk", chunk.contains("交换机按 MAC 地址表转发"))
+        assertTrue("第二条也要进素材：$chunk", chunk.contains("接口1 MAC BL:AC:K0"))
+        assertEquals("说明块只占一行头部：$chunk", 1, chunk.lines().count { it.contains("[图示]") })
+        assertTrue("图上内容要缩进成块：$chunk", chunk.lines().any { it == "    - 交换机按 MAC 地址表转发" })
+    }
+
+    /**
+     * 视觉模型爱用「## 定义：」「> 要点：」开头。这些记号要在进素材前就洗掉，
+     * 不然整理那一步会把它们当成笔记的小标题抄一遍，整篇就变成「定义 / 作用 / 要点」的模板。
+     */
+    @Test
+    fun captionHeadingsAreStrippedBeforeSending() {
+        val n = Note("t", "测试课", 0L, 0L, 0L, "mic")
+        n.entries.add(
+            Entry(
+                65_000L, "", image = "shots/a.jpg", analyzed = true,
+                caption = "## 定义：\n> 要点：ARP 记录表存 IP 和 MAC 的对应关系"
+            )
+        )
+        val chunk = LlmDigest.plan(n).chunks[0]
+        assertFalse("栏目名记号不该原样发给模型：$chunk", chunk.contains("## 定义"))
+        assertFalse("引用记号也不该留着：$chunk", chunk.contains("> 要点"))
+        assertTrue("内容本身要留着：$chunk", chunk.contains("    - 要点：ARP 记录表存 IP 和 MAC 的对应关系"))
+    }
     @Test
     fun inventedMarkerIsDroppedQuietly() {
         val md = LlmDigest.embedImages("## 一、二叉树\n\n[[IMG7]]\n", shotNote())
@@ -218,5 +258,69 @@ class LlmDigestPlanTest {
         // 没配 Key 会立刻抛错，但那时清零已经做过了；关键是标记有没有被清掉
         runCatching { LlmDigest.analyzeImage("AAAA") }
         assertFalse("上一次的取消标记不能留到下一次任务", LlmDigest.isCancelled())
+    }
+    /** 模型写在最前面的「题目：xxx」是用来给笔记命名的，正文里不能留这一行。 */
+    @Test
+    fun topicLineIsPulledOutOfTheBody() {
+        val md = "题目：ARP 协议与 ARP 欺骗攻击\n\n> 这节课讲 ARP 怎么工作。\n\n## 一、ARP 协议\n"
+        val (topic, body) = LlmDigest.splitTopic(md)
+        assertEquals("ARP 协议与 ARP 欺骗攻击", topic)
+        assertFalse("题目行不该留在正文里：$body", body.contains("题目："))
+        assertTrue("正文其余部分要原样保留：$body", body.contains("## 一、ARP 协议"))
+        assertTrue("导语也要留着：$body", body.contains("> 这节课讲 ARP 怎么工作。"))
+    }
+
+    /** 正文里正常写「题目：」的地方（例题、习题）不能被当成标题摘走。 */
+    @Test
+    fun topicWordDeepInTheBodyIsIgnored() {
+        val md = "> 导语\n\n## 一、例题\n- 题目：求二叉树的深度\n"
+        val (topic, body) = LlmDigest.splitTopic(md)
+        assertEquals("", topic)
+        assertEquals(md, body)
+    }
+
+    /** 模型没写题目时保持原样：绝不能把笔记名换成空字符串。 */
+    @Test
+    fun missingTopicKeepsTheOldName() {
+        val md = "> 导语\n\n## 一、ARP 协议\n"
+        val (topic, body) = LlmDigest.splitTopic(md)
+        assertEquals("", topic)
+        assertEquals(md, body)
+        assertEquals("空的题目行不算题目", "", LlmDigest.splitTopic("题目：\n\n> 导语\n").first)
+    }
+    /** 模型把整篇包进 ``` 时要拆掉 —— 不然排版视图整篇都是代码块，图也插不回去。 */
+    @Test
+    fun wholeBodyInAFenceIsUnwrapped() {
+        val wrapped = "```markdown\n## 一、ARP 协议\n- `[00:10]` 讲定义\n```"
+        assertEquals("## 一、ARP 协议\n- `[00:10]` 讲定义", LlmDigest.unwrapFence(wrapped))
+        val plain = "## 一、ARP 协议\n- `[00:10]` 讲定义"
+        assertEquals("没被包起来就别动它", plain, LlmDigest.unwrapFence(plain))
+    }
+
+    /** 模型忘了写题目时，从导语里抠一个名字出来；抠不出来就返回空串，宁可留着原来的名字。 */
+    @Test
+    fun leadLineBecomesTheNameWhenTopicIsMissing() {
+        val md = "> 本节课将介绍Socket的概念、作用以及与TCP/UDP的关系，并通过实例讲解通信过程。\n\n## 一、Socket\n"
+        assertEquals("Socket的概念", LlmDigest.topicFromLead(md))
+        assertEquals("没有导语就别硬起名字", "", LlmDigest.topicFromLead("## 一、Socket\n"))
+        assertEquals("剥完什么都不剩也算了", "", LlmDigest.topicFromLead("> 本节课将。\n"))
+    }
+    /** 老师没布置作业，模型却留一节「作业与下节预告」用「本节课没有布置作业」占位 —— 整节删掉。 */
+    @Test
+    fun placeholderHomeworkSectionIsDropped() {
+        val md = "## 一、ARP 协议\n- `[00:10]` 讲定义\n\n## 作业与下节预告\n" +
+            "（本节课没有布置作业，下节课将讲解网络层的其他协议。）\n"
+        val out = LlmDigest.dropEmptyHomework(md)
+        assertFalse("占位作业节要删掉：$out", out.contains("作业"))
+        assertTrue("别的节要留着：$out", out.contains("## 一、ARP 协议"))
+    }
+
+    /** 真布置了作业的课，那一节必须原样留着。 */
+    @Test
+    fun realHomeworkSectionStays() {
+        val md = "## 一、ARP 协议\n- `[00:10]` 讲定义\n\n## 作业与下节预告\n" +
+            "- 作业：完成课本 P52 第 3、5 题\n- 下节课讲子网划分\n"
+        val out = LlmDigest.dropEmptyHomework(md)
+        assertTrue("真作业不能删：$out", out.contains("课本 P52"))
     }
 }

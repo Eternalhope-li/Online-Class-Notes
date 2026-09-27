@@ -120,12 +120,21 @@ object DigestJob {
         notifyProgress()
         job = scope.launch {
             try {
-                val body = LlmDigest.digest(note, onProgress = { done, total, label ->
+                val draft = LlmDigest.digest(note, onProgress = { done, total, label ->
                     val cur = _state.value
                     if (cur.running) _state.value = cur.copy(done = done, total = total, label = label)
                 })
                 val tag = App.instance.getString(R.string.digest_tag_ai)
-                NoteStore.saveDigest(note.id, DigestDoc.ai(note, tag, body))
+                // 名字还是 App 自动起的（「网课笔记 09-27 17:22」这种），就顺手换成这节课的题目。
+                // 两种情况不动它：用户自己改过名字（autoTitle = false）；或者这个名字本来就是
+                // AI 起的（aiTitle = true）—— 重跑一次不该让笔记名再变一次，翻笔记时对不上。
+                if (draft.topic.isNotEmpty() && note.autoTitle && !note.aiTitle) {
+                    NoteStore.rename(note.id, draft.topic, auto = true, ai = true)
+                    note.title = draft.topic
+                    note.aiTitle = true
+                    _state.value = _state.value.copy(noteTitle = draft.topic)
+                }
+                NoteStore.saveDigest(note.id, DigestDoc.ai(note, tag, draft.body))
                 _state.value = _state.value.copy(phase = Phase.DONE, label = "")
                 notifyDone(note)
                 finished(note.id)

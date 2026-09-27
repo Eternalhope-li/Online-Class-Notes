@@ -273,7 +273,9 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:hint="@string/settings_llm_base">
+                        android:hint="@string/settings_llm_base"
+                        app:endIconMode="clear_text"
+                        app:helperText="@string/settings_llm_base_helper">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/llmBase"
@@ -289,8 +291,10 @@
                         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
                         android:hint="@string/settings_llm_key"
-                        app:endIconMode="password_toggle">
+                        app:endIconMode="password_toggle"
+                        app:helperText="@string/settings_llm_key_helper">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/llmKey"
@@ -305,7 +309,10 @@
                         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/settings_llm_model">
+                        android:layout_marginTop="10dp"
+                        android:hint="@string/settings_llm_model"
+                        app:endIconMode="clear_text"
+                        app:helperText="@string/settings_llm_model_helper">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/llmModel"
@@ -323,6 +330,27 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
                         android:text="@string/settings_llm_test" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnPasteKey"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/settings_llm_paste" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/llmHelp"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_llm_help" />
+                    </LinearLayout>
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnPreview"
@@ -455,7 +483,8 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
-                        android:hint="@string/settings_llm_model">
+                        android:hint="@string/settings_vision_model_label"
+                        app:helperText="@string/settings_vision_model_helper">
 
                         <com.google.android.material.textfield.MaterialAutoCompleteTextView
                             android:id="@+id/visionModel"
@@ -476,21 +505,14 @@
                         android:paddingVertical="6dp"
                         android:textSize="12sp" />
 
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:alpha="0.65"
-                        android:lineSpacingExtra="3dp"
-                        android:text="@string/settings_vision_extra"
-                        android:textSize="12sp" />
-
                     <com.google.android.material.textfield.TextInputLayout
                         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:hint="@string/settings_vision_base">
+                        android:layout_marginTop="10dp"
+                        android:hint="@string/settings_vision_base"
+                        app:endIconMode="clear_text"
+                        app:helperText="@string/settings_vision_base_helper">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/visionBase"
@@ -505,8 +527,10 @@
                         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
                         android:hint="@string/settings_vision_key"
-                        app:endIconMode="password_toggle">
+                        app:endIconMode="password_toggle"
+                        app:helperText="@string/settings_vision_key_helper">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/visionKey"
@@ -582,6 +606,14 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
                         android:alpha="0.8"
+                        android:textSize="13sp" />
+                    <TextView
+                        android:id="@+id/aboutAuthor"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:alpha="0.8"
+                        android:text="@string/settings_about_author"
                         android:textSize="13sp" />
 
                     <TextView

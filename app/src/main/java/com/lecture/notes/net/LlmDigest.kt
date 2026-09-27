@@ -40,6 +40,9 @@ object LlmDigest {
 
     class LlmException(message: String) : Exception(message)
 
+    /** 一次整理的结果：正文 + 模型给的这节课的题目（没给就是空串）。 */
+    class Draft(val topic: String, val body: String)
+
     private const val CHUNK_CHARS = 2600
     private const val MERGE_CHARS = 11000
     private const val MAX_TOKENS = 3200
@@ -52,6 +55,14 @@ object LlmDigest {
     private const val FINAL_MAX_TOKENS = 2400
     /** 素材卡只是中间产物，输出收窄能让这一轮明显更快。 */
     private const val MATERIAL_MAX_TOKENS = 900
+    /** 长课第一步的「提纲」：只有骨架和要点短语，输出收窄。 */
+    private const val OUTLINE_MAX_TOKENS = 1600
+    /** 提纲一轮发得完的素材字数，超了先分组出提纲、再把提纲并成一份。 */
+    private const val OUTLINE_CHARS = 12000
+    /** 逐节成文时，一节最多带多少素材（按时间戳从素材卡里切出来）。 */
+    private const val SECTION_CHARS = 7000
+    /** 逐节成文时，一节写多少字：一节一版的输出预算。 */
+    private const val SECTION_MAX_TOKENS = 1400
     /**
      * 一次能发完的总字数：在这个范围内直接出终稿，省掉「素材卡 + 合并」两轮调用。
      *
@@ -104,7 +115,7 @@ object LlmDigest {
     }
 
     /**
-     * 整理一篇笔记。[onProgress] 的参数是（已完成段数, 总段数, 正在做什么）。
+     * 整理一篇笔记，返回正文和这节课的题目（见 [Draft]）。[onProgress] 的参数是（已完成段数, 总段数, 正在做什么）。
      * [onPartial] 非空时开启流式输出：模型每吐出一小段就回调一次**累积后**的全文，
      * 界面可以边生成边显示，不用对着进度条干等。
      *
@@ -117,16 +128,24 @@ object LlmDigest {
         note: Note,
         onProgress: (Int, Int, String) -> Unit,
         onPartial: ((String) -> Unit)? = null
-    ): String = withContext(Dispatchers.IO) {
+    ): Draft = withContext(Dispatchers.IO) {
         cancelled = false
         val key = Prefs.llmKey.trim()
         if (key.isEmpty()) throw LlmException("还没有填写 API Key")
         val plan = plan(note)
         if (plan.chunks.isEmpty()) throw LlmException("这篇笔记还没有内容")
 
-        // 流式回调也过一遍图片还原：边生成边看到的就是最终排版，图已经在它该在的小节里
+        // 流式回调也过一遍图片还原和题目行剥离：边生成边看到的就是最终排版
         val live: ((String) -> Unit)? = onPartial?.let { cb ->
-            { md: String -> cb(embedImages(md, note, appendFallback = false)) }
+            { md: String ->
+                cb(
+                    splitTopic(
+                        stripTimestamps(
+                            embedImages(MiniMarkdown.demoteFences(unwrapFence(md)), note, appendFallback = false)
+                        )
+                    ).second
+                )
+            }
         }
 
         val body = try {
@@ -144,12 +163,27 @@ object LlmDigest {
                 throw t
             }
         }
-        // 模型爱把图塞在要点行中间（`- **图示**：![…](shots/x.jpg) 说明`），落盘前先提行：
-        // 解析层只认独占一行的图片，不提行整张图就没了；导出的 .md / .html 也因此是干净的
-        MiniMarkdown.hoistImages(embedImages(body, note))
+        // 顺序有讲究：先拆掉模型加的围栏（整篇的、包半截的，见 MiniMarkdown.demoteFences），
+        // 再去重（这时图还没插进去，删重复不会带走图片），
+        // 然后插图和图示兜底，最后收掉「没布置作业」的空壳小节
+        val clean = tidyDigest(MiniMarkdown.demoteFences(unwrapFence(body)))
+        val placed = dropEmptyHomework(unwrapFence(MiniMarkdown.hoistImages(embedImages(clean, note))))
+        // 第一行是模型写的「题目：xxx」，它只用来给笔记命名，正文里不留这一行
+        // 时间戳的使命到这儿就结束了：图已经按它插好了，成品里不再留坐标
+        val (topic, text) = splitTopic(stripTimestamps(placed))
+        Draft(topic.ifEmpty { topicFromLead(text) }, text)
     }
 
-    /** 长课：各段并行出素材卡，再把这些卡片合成一版终稿。 */
+    /**
+     * 长课走这条路：素材卡（分段并行）→ 一份全局提纲 → 按提纲逐节成文（并行）。
+     *
+     * 为什么不是「把所有素材卡合成一版终稿」：那样整堂课只有一个输出预算，两小时的课会被压成
+     * 一千多字的骨架，越长的课丢得越多 —— 而合并那一步读到的已经是压缩过的文字，再压一遍就只剩
+     * 标题了。改成「先定体系、再按节写」之后，每一节都有自己那段素材、自己的输出预算，课再长也
+     * 不会被摊薄；各节并行发出，总等待时间不比自己写一遍长。
+     *
+     * 提纲没能分出大节（模型不听话、素材太碎）时退回老路：把素材卡合成一版终稿。
+     */
     private suspend fun segmented(
         key: String,
         plan: Plan,
@@ -157,8 +191,71 @@ object LlmDigest {
         live: ((String) -> Unit)?
     ): String {
         val cards = material(key, plan.chunks, onProgress)
-        onProgress(plan.chunks.size, plan.chunks.size, "体系化合并")
-        return finalize(key, cards.joinToString("\n\n"), live)
+        onProgress(plan.chunks.size, plan.chunks.size, "先理提纲")
+        val outline = outlineOf(key, cards)
+        val o = sectionsOf(outline)
+        val write = o.sections.filter { it.body.isNotBlank() }
+        if (o.sections.isEmpty() || write.isEmpty()) {
+            onProgress(plan.chunks.size, plan.chunks.size, "体系化合并")
+            return finalize(key, cards.joinToString("\n\n"), live)
+        }
+        onProgress(0, o.sections.size, "按提纲成文")
+        val done = AtomicInteger(0)
+        val texts = inParallel(o.sections) { _, sec ->
+            val n = done.incrementAndGet()
+            onProgress(n, o.sections.size, "第 $n/${o.sections.size} 节")
+            if (sec.body.isBlank()) return@inParallel sec.head
+            // 需要成文的节才有素材需求；知识框架、一句话总结这类栏目直接用提纲里的写法
+            if (sec.keep) return@inParallel (sec.head + "\n" + sec.body).trim()
+            val from = sectionMaterial(cards, sec)
+            try {
+                val ask = buildString {
+                    append("请只写下面这一节的笔记，不要写题目、导语和别的小节。\n\n")
+                    append("【这节课的全局提纲】（照着它的体系写，不要改结构）\n")
+                    append(outline.trim()).append("\n\n")
+                    append("【要写的小节】\n").append(sec.head).append("\n")
+                    append(sec.body.trim()).append("\n\n")
+                    append("【这一节的课堂素材】\n").append(from)
+                }
+                val got = clean(call(key, SECTION, ask, maxTokens = SECTION_MAX_TOKENS)).trim()
+                if (got.startsWith("##")) got else sec.head + "\n" + got
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                sec.head + "\n" + sec.body   // 这一节写砸了就用提纲里的写法顶上，别整篇失败
+            }
+        }
+        return (listOf(o.preamble) + texts).filter { it.isNotBlank() }.joinToString("\n\n").trim()
+    }
+
+    /** 全局提纲：素材卡不太长时一轮出；太长就分组出提纲再并成一份。 */
+    private suspend fun outlineOf(key: String, cards: List<String>): String {
+        val all = cards.joinToString("\n\n")
+        if (all.length <= OUTLINE_CHARS) {
+            return clean(call(key, OUTLINE, all, maxTokens = OUTLINE_MAX_TOKENS))
+        }
+        val parts = inParallel(splitText(all, OUTLINE_CHARS)) { _, g ->
+            clean(call(key, OUTLINE, g, maxTokens = OUTLINE_MAX_TOKENS))
+        }
+        if (parts.size == 1) return parts[0]
+        return clean(call(key, OUTLINE_MERGE, parts.joinToString("\n\n"), maxTokens = OUTLINE_MAX_TOKENS))
+    }
+
+    /**
+     * 这一节对应的素材：素材卡里时间戳落在这一节范围内（两边各放宽 20 秒）的那些。
+     *
+     * 一节一条时间戳都没有（模型忘了写）时不能只按时间挑 —— 那样会挑空，这一节就没素材了；
+     * 这时候退回「把素材卡都给它」（由 [SECTION_CHARS] 截断），宁可多喂一点也别漏内容。
+     */
+    private fun sectionMaterial(cards: List<String>, sec: Sec): String {
+        val slice = if (sec.from < 0) {
+            cards.joinToString("\n\n")
+        } else {
+            val lo = sec.from - 20
+            val hi = sec.to + 20
+            val hit = cards.filter { c -> tsRange(c).first >= 0 && tsRange(c).second >= lo && tsRange(c).first <= hi }
+            (if (hit.isEmpty()) cards else hit).joinToString("\n\n")
+        }
+        return if (slice.length <= SECTION_CHARS) slice else slice.substring(0, SECTION_CHARS)
     }
 
     /** 「测试连接」用：发一句最短的话，确认地址 / Key / 模型名都对。 */
@@ -266,28 +363,123 @@ object LlmDigest {
     }
 
     /** 并发跑一批互不依赖的请求，最多 [PARALLEL] 个同时进行，返回顺序与入参一致。 */
-    private suspend fun <T> inParallel(items: List<String>, block: suspend (Int, String) -> T): List<T> =
+    private suspend fun <T, R> inParallel(items: List<T>, block: suspend (Int, T) -> R): List<R> =
         coroutineScope {
             val gate = Semaphore(PARALLEL)
             items.mapIndexed { i, s -> async { gate.withPermit { block(i, s) } } }.awaitAll()
         }
 
+    /** 提纲里拆出来的一个大节。 */
+    internal class Sec(val head: String, val body: String) {
+        /** 这一节的时间范围（秒）：按正文里的时间戳算；一条都没有就是 -1。 */
+        val from: Int = tsRange(body).first
+        val to: Int = tsRange(body).second
+        /** 知识框架、术语表、一句话总结这类栏目直接用提纲里的写法，不再逐节扩写。 */
+        val keep: Boolean get() = KEEP_SECTIONS.containsMatchIn(head)
+    }
+
+    /** 提纲拆出来的结果：大节之前的部分（题目行、导语、知识框架…）+ 各个大节。 */
+    internal class Outline(val preamble: String, val sections: List<Sec>)
+
+    /** 「知识框架 / 术语表 / 一句话总结」这类栏目由提纲直接给，不必再逐节扩写。 */
+    private val KEEP_SECTIONS = Regex("框架|术语|公式表|易错|考点|总结|作业|下节|预告")
+
+    /** 一段文字里的时间戳范围（秒）；一个都没有返回 -1 / -1。 */
+    private fun tsRange(text: String): Pair<Int, Int> {
+        val ts = TS_RE.findAll(text).map {
+            (it.groupValues[1].toIntOrNull() ?: 0) * 60 + (it.groupValues[2].toIntOrNull() ?: 0)
+        }.toList()
+        return if (ts.isEmpty()) -1 to -1 else ts.min() to ts.max()
+    }
+
+    /**
+     * 把提纲拆成「前言 + 大节」。只认 "## " 那一级大节，大节下面的 "### " 和要点都算它的正文。
+     * 提纲整体不听话（没有任何大节）时返回空的 sections，调用方据此退回「合并一版终稿」。
+     */
+    internal fun sectionsOf(outline: String): Outline {
+        val lines = outline.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val pre = ArrayList<String>()
+        val secs = ArrayList<Sec>()
+        var head: String? = null
+        var body = ArrayList<String>()
+        fun flush() {
+            val h = head ?: return
+            secs.add(Sec(h.trim(), body.joinToString("\n").trim()))
+        }
+        for (raw in lines) {
+            val t = raw.trim()
+            if (t.startsWith("## ") || t == "##") {
+                flush()
+                head = t
+                body = ArrayList()
+            } else if (head == null) {
+                if (t.isNotEmpty()) pre.add(raw.trimEnd())
+            } else {
+                body.add(raw.trimEnd())
+            }
+        }
+        flush()
+        return Outline(pre.joinToString("\n").trim(), secs)
+    }
+
+    /**
+     * 把整篇笔记切成能一次发完的几段。
+     *
+     * 语音转写一句一行；截图条目不止一行 —— 它后面跟着视觉模型认出的每一条图上内容
+     * （见 [linesOf]）。这里曾经把说明压成一行，模型就只吃掉了开头半句，
+     * 图上的表格、地址、公式全没进笔记。
+     */
     private fun chunk(note: Note): List<String> {
         val out = ArrayList<String>()
         val sb = StringBuilder()
         for (e in note.entries) {
-            // 截图条目用它自己的说明文字顶上去，AI 把图上讲了什么揉进这一段的正文；
-            // 图片本身的位置由 App 按时间戳算（见 embedImages），不指望模型记住记号
-            val body = e.digestText
-            if (body.isBlank()) continue
-            val line = "[" + Formats.mmss(e.atMs) + "] " + if (e.star) "★ " + body else body
-            if (sb.isNotEmpty() && sb.length + line.length > CHUNK_CHARS) {
+            val lines = linesOf(e)
+            if (lines.isEmpty()) continue
+            val width = lines.sumOf { it.length + 1 }
+            if (sb.isNotEmpty() && sb.length + width > CHUNK_CHARS) {
                 out.add(sb.toString())
                 sb.setLength(0)
             }
-            sb.append(line).append('\n')
+            for (line in lines) sb.append(line).append('\n')
         }
         if (sb.isNotEmpty()) out.add(sb.toString())
+        return out
+    }
+
+    /**
+     * 一条记录在素材里占的行。
+     *
+     * 语音转写就是一行；截图条目是「一行头部 + 缩进列出的图上内容」：视觉模型认出来的每条文字、
+     * 数字、表头、代码都单占一行，模型才会把它们当素材逐条整理 —— 压成一行就只会被吃掉第一句。
+     * 图片本身插在哪由 App 按时间戳算（见 [embedImages]），这里只负责把「图上讲了什么」喂过去。
+     */
+    private fun linesOf(e: Entry): List<String> {
+        val head = "[" + Formats.mmss(e.atMs) + "] "
+        if (!e.isImage) {
+            if (e.text.isBlank()) return emptyList()
+            return listOf(head + if (e.star) "★ " + e.text else e.text)
+        }
+        val items = e.caption.replace("\r\n", "\n").replace('\r', '\n')
+            .split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+        val mark = if (e.star) "★ " else ""
+        if (items.isEmpty()) {
+            return listOf(head + mark + "[图示] 老师当时展示的课件截图（没有识别出文字）")
+        }
+        val out = ArrayList<String>(items.size + 1)
+        out.add(head + mark + "[图示] 老师当时展示的课件截图，下面是视觉模型认出的图上内容：")
+        for (raw in items) {
+            // 视觉模型爱把整段内容包进代码块：围栏本身不是内容，喂过去只会让模型跟着抄围栏
+            if (raw.startsWith("```")) continue
+            // 视觉模型爱用 "## 定义："" > 要点：" 这类栏目名开头，原样喂过去，模型就会把它照抄成
+            // 笔记的小标题；这里先把记号洗掉，只把内容本身交给整理那一步
+            if (raw[0] == '|' || raw[0] == '`') {
+                out.add("    " + raw)
+                continue
+            }
+            val t = raw.trim('-', '*', '+', '>', '#', '·', '•', ' ')
+            if (t.isEmpty()) continue
+            out.add("    - " + t)
+        }
         return out
     }
 
@@ -314,10 +506,11 @@ object LlmDigest {
      *
      * 位置是 App 自己算的，不问模型：模型只要一偷懒，整篇的图就会全堆到文末 ——
      * 而「这张图是什么时候截的」App 本来就知道，整理稿里又留着 `[mm:ss]`，
-     * 于是「插到不晚于它的最后一条要点下面」就能让图回到它该在的那一小节里。
+     * 于是「插到时间上最贴近的那条要点下面」就能让图回到它该在的那一小节里。
      *
      * 模型偶尔还会自己把 `[[IMG1]]`、`[图示]` 抄进正文，先统一擦干净再插，
-     * 免得成品里留一串看不懂的记号。
+     * 免得成品里留一串看不懂的记号。插进去的只有图片本身：图上讲了什么，模型已经按上面的
+     * 要求整理进周围的要点里了，不再把视觉模型的原文照抄一遍。
      *
      * [appendFallback] 为真时，正文一行时间戳都没有（模型把时间戳全删了）才退回
      * 文末的「本课图示」小节 —— 位置差一点也比丢图好。流式预览传 false：
@@ -359,8 +552,9 @@ object LlmDigest {
      * 每张图插到时间上最贴近的那条要点下面。
      *
      * 落点只认「带时间戳的正文行」：标题行不算（插在标题和正文之间很别扭），
-     * 表格行、代码块也不算（插进去会把表格和代码拦腰截断）。
-     * 比正文第一句还早的图放在最前面。整篇一个时间戳都没有就返回 null，交给调用方兜底。
+     * 表格行、代码块也不算（插进去会把表格拦腰截断）。哪一条的 `[mm:ss]` 离截图时间最近
+     * 就算哪一条 —— 比截图早的和晚的都算，一样近时优先前面那条。整篇一个时间戳都没有
+     * 就返回 null，交给调用方退回文末的汇总小节。
      */
     private fun placeByTime(body: String, images: List<Entry>): String? {
         val lines = body.split('\n')
@@ -369,29 +563,247 @@ object LlmDigest {
         val buckets = HashMap<Int, MutableList<Entry>>()
         for (e in images) {
             val want = (e.atMs / 1000L).toInt()
-            var at = -1
-            for (i in anchors) if (tsOf(lines[i]) in 0..want) at = i
-            if (at < 0) at = anchors.first() - 1
+            var at = anchors.first()
+            var best = Int.MAX_VALUE
+            for (i in anchors) {
+                val t = tsOf(lines[i])
+                val gap = if (t > want) t - want else want - t
+                if (gap < best) {
+                    best = gap
+                    at = i
+                }
+            }
             buckets.getOrPut(at) { ArrayList() }.add(e)
         }
-        val out = ArrayList<String>(lines.size + images.size * 5)
-        buckets.remove(-1)?.let { head ->
-            for (e in head) {
-                out.add(NoteStore.shotBlock(e).trimEnd())
-                out.add("")
-            }
-        }
+        val out = ArrayList<String>(lines.size + images.size * 3)
         for ((i, line) in lines.withIndex()) {
             out.add(line)
             val group = buckets[i] ?: continue
             for (e in group) {
                 out.add("")
-                out.add(NoteStore.shotBlock(e).trimEnd())
+                out.add(figure(e))
             }
         }
         return out.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
     }
 
+    /**
+     * 整理稿里的图片本身：`![课堂截图 mm:ss](shots/x.jpg)`。
+     *
+     * 只放图 —— 图上讲了什么已经由模型整理进周围的要点里了，不再把视觉模型的原文照抄在图下面
+     * （那样一篇笔记里同样的内容会出现两遍，而且是一段没整理过的话）。
+     * 只有整篇一个时间戳都没有、模型没机会整理时才退回 [NoteStore.shotsSection]，
+     * 那时才连说明一起列出来 —— 那种情况下把图丢了比位置差更糟。
+     */
+    private fun figure(e: Entry): String =
+        "![课堂截图 " + Formats.mmss(e.atMs) + "](" + e.image + ")"
+
+    /** 正文最前面那行「题目：xxx」——模型用它给这节课起名，整理稿里不留这一行。 */
+    private val TOPIC_RE = Regex("^[\\s#*>\\-]*(?:\\*\\*)?题\\s*目(?:\\*\\*)?[\\s:：]+(.+?)\\s*$")
+
+    /**
+     * 把模型写的第一行题目摘出来，返回（题目, 去掉题目行的正文）。
+     *
+     * 题目必须是正文最前面那行内容（前面最多允许两行空行），找不到就返回空题目 ——
+     * 名字交给 App 用，所以先做一遍清洗：去掉强调记号、书名号，长度也收一收，免得侧边栏被撑爆。
+     */
+    internal fun splitTopic(md: String): Pair<String, String> {
+        val lines = md.replace("\r\n", "\n").replace('\r', '\n').split('\n').toMutableList()
+        // 题目必须是最前面那行非空内容：正文里正常出现的「题目：」不该被摘走
+        val head = lines.indexOfFirst { it.isNotBlank() }
+        if (head < 0 || head > 2) return "" to md
+        val m = TOPIC_RE.find(lines[head]) ?: return "" to md
+        val name = m.groupValues[1].trim()
+            .trim('*', '`', '#', '「', '」', '《', '》', '。', '，', '：', ':').trim()
+        if (name.isEmpty()) return "" to md
+        lines.removeAt(head)
+        return name.take(24) to lines.joinToString("\n").trim()
+    }
+
+    /**
+     * 模型偶尔把整篇笔记包在 ``` 代码块里（glm-4-flash 会这么干）。
+     *
+     * 不拆的话，排版视图会把整篇当成一个代码块，用户看到的就是一大片带 `##`、`- ` 的 markdown
+     * 源码（这是被反馈过的「整理之后全是源码」）；而且 App 认不出里面的时间戳，截图也就插不回去。
+     *
+     * 所以只要「第一行是围栏开头 + 最后一行是围栏结尾」就拆 —— 不去数里层的围栏是否成对：
+     * 里层剩下的围栏（模型从课件说明里抄来的、或者真的代码块）交给解析层正常处理，
+     * 而「整篇包一层」在任何情况下都不是我们想要的排版。
+     */
+    internal fun unwrapFence(md: String): String {
+        var cur = md
+        // 偶尔会包两层，拆到不是为止（最多三轮，防呆）
+        repeat(3) {
+            val lines = cur.replace("\r\n", "\n").replace('\r', '\n').trim().lines()
+            if (lines.size < 3) return cur
+            if (!isFenceOpen(lines.first().trim().lowercase())) return cur
+            if (lines.last().trim() != "```") return cur
+            cur = lines.subList(1, lines.size - 1).joinToString("\n").trim()
+        }
+        return cur
+    }
+
+    /** 整篇围栏的开头行：``` 或 ```markdown / ```md / ```text。 */
+    private fun isFenceOpen(line: String): Boolean =
+        line == "```" || line.startsWith("```markdown") || line.startsWith("```md") ||
+            line.startsWith("```text")
+
+    /** 导语里那些「承上启下」的开头词，做笔记名的时候都没有意义：主打信息量。 */
+    private val LEAD_VERBS = listOf(
+        "本节课", "这节课", "本课", "本讲", "今天", "我们", "主要", "讲解", "介绍", "学习", "聊聊",
+        "将", "要", "会"
+    )
+
+    /**
+     * 模型忘了写「题目：」时的退路：从导语那一行里抠一个名字出来。
+     *
+     * 「本节课将介绍 Socket 的概念、作用以及…」→ 「Socket 的概念」：先取第一个分句，再把开头那些
+     * 没有信息量的动词一层层剥掉。剥到没剩下什么（短于两个字）就返回空串 —— 名字还是留着原来的，
+     * 总比换成「将」这种半截话好。
+     */
+    internal fun topicFromLead(md: String): String {
+        val lead = md.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+            .firstOrNull { it.trimStart().startsWith(">") } ?: return ""
+        var t = lead.trimStart().trimStart('>').trim()
+        val cut = t.indexOfFirst { it in "，。；：、,." }
+        if (cut > 0) t = t.substring(0, cut)
+        while (true) {
+            val v = LEAD_VERBS.firstOrNull { t.startsWith(it) && t.length - it.length >= if (it.length == 1) 4 else 2 }
+                ?: break
+            t = t.removePrefix(v).trim()
+        }
+        // 还剩着开头的空话（比如卡在「本节课将」这种半截话上），说明这个导语抠不出名字，索性不要
+        if (LEAD_VERBS.any { t.startsWith(it) }) return ""
+        t = t.trim(' ', '。', '，', '：', ':', '、', '；')
+        return if (t.length < 2) "" else t.take(20)
+    }
+
+    /** 要点里的时间戳记号：`[03:12]` / [03:12] 都认。 */
+    private val TS_MARK = Regex("`?\\[\\d{1,3}:\\d{2}]`?")
+
+    /**
+     * 擦掉成品里的时间戳。
+     *
+     * 时间戳只在整理过程中有用：App 靠它把课件截图插回「当时正在讲的那句话」下面（见 [embedImages]）。
+     * 插完就没用了 —— 用户要的是知识点，不是一串回到录播的坐标。图片题注（`![课堂截图 00:39]`）
+     * 里的时刻不带方括号，不会被误伤。
+     */
+    internal fun stripTimestamps(md: String): String {
+        if (!md.contains('[')) return md
+        val out = ArrayList<String>()
+        for (raw in md.replace("\r\n", "\n").replace('\r', '\n').split('\n')) {
+            if (!TS_MARK.containsMatchIn(raw) || raw.trimStart().startsWith("![")) {
+                out.add(raw)
+                continue
+            }
+            // 擦掉记号，再把列表符号后面多出来的空格收掉（缩进要留着，子要点靠它）
+            var line = TS_MARK.replace(raw, "")
+            line = line.replace(Regex("^(\\s*[-*+]\\s+)\\s+"), "$1").trimEnd()
+            val bare = line.trimStart()
+            if (bare.isEmpty() || bare == "-" || bare == "*" || bare == "+") continue
+            out.add(line)
+        }
+        return out.joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()
+    }
+
+    /**
+     * 收尾的两件确定性清理（模型反复犯、提示词按不住的毛病）：
+     *
+     *  1. 同一件事在两个大节里各写一遍（时间戳和句子都一样）→ 只留第一次出现的那条；
+     *  2. 某一节被去重掏空之后只剩一个标题 → 连标题一起删掉（空壳小节比缺一节更糟）。
+     */
+    internal fun tidyDigest(md: String): String {
+        val seen = HashSet<String>()
+        val kept = ArrayList<String>()
+        for (line in md.replace("\r\n", "\n").replace('\r', '\n').split('\n')) {
+            val m = BULLET_ONE.find(line)
+            if (m != null) {
+                val key = dupKey(m.groupValues[1])
+                // 太短的句子不参与去重，免得把「注意」「第一步」这种正常短要点误删
+                if (key.length >= 8 && !seen.add(key)) continue
+            }
+            kept.add(line)
+        }
+        val out = dropEmptySections(kept).joinToString("\n")
+        return out.replace(Regex("\n{3,}"), "\n\n").trim()
+    }
+
+    private val BULLET_ONE = Regex("^\\s*[-*+]\\s+(.*)$")
+
+    /** 去重指纹：时间和标点都不算，只看内容本身。 */
+    private fun dupKey(text: String): String = text
+        .replace(TS_RE, "")
+        .replace(Regex("[\\s*`>#]"), "")
+        .replace(Regex("[。，、；：,.;:!？?！\"'（）()【】\\[\\]]"), "")
+
+    /** 只剩一个标题、下面一条内容都没有的小节（去重之后产生）——连标题一起删掉。 */
+    private fun dropEmptySections(lines: List<String>): List<String> {
+        val out = ArrayList<String>(lines.size)
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            val m = HEAD_ONE.find(line)
+            if (m == null) {
+                out.add(line)
+                i++
+                continue
+            }
+            val level = m.groupValues[2].length
+            var end = i + 1
+            var content = false
+            while (end < lines.size) {
+                val h = HEAD_ONE.find(lines[end])
+                if (h != null && h.groupValues[2].length <= level) break
+                if (lines[end].isNotBlank()) content = true
+                end++
+            }
+            // 有内容（或下面还有更深的小标题）就留着，什么都没有就整节丢掉
+            if (content) for (k in i until end) out.add(lines[k])
+            i = end
+        }
+        return out
+    }
+
+    private val HEAD_ONE = Regex("^(\\s*)(#{1,6})\\s+\\S")
+
+    /** 「作业 / 课后 / 下节」这类小节的开头。 */
+    private val HOMEWORK_HEAD = Regex("^#{1,3}\\s*(作业|课后|下节)")
+
+    /** 「本节课没有布置作业」这类占位话。 */
+    private val NO_HOMEWORK = Regex("(没有|未|无)[^。；]{0,6}(布置)?\\s*(课后)?作业")
+
+    /**
+     * 老师没布置作业、也没预告下节课时，模型偏偏要留一节「作业与下节预告」，
+     * 里面写「本节课没有布置作业」占位，还顺手编一句下节课讲什么 —— 整节删掉。
+     *
+     * 这是提示词反复按住、glm-4-flash 还是会犯的毛病，所以在结果上再兜一道：
+     * 只要这一节里出现「没（有）布置作业」这种话，就认定它是空壳，连标题一起收掉。
+     * 真布置了作业的小节里不会这么写，不会被误伤。
+     */
+    internal fun dropEmptyHomework(md: String): String {
+        val lines = md.replace("\r\n", "\n").replace('\r', '\n').split('\n').toMutableList()
+        var i = 0
+        while (i < lines.size) {
+            if (!HOMEWORK_HEAD.containsMatchIn(lines[i].trimStart())) {
+                i++
+                continue
+            }
+            var end = i + 1
+            while (end < lines.size && !lines[end].trimStart().startsWith("#")) end++
+            val body = lines.subList(i + 1, end).joinToString(" ")
+            if (!NO_HOMEWORK.containsMatchIn(body)) {
+                i = end
+                continue
+            }
+            var from = i
+            while (from > 0 && lines[from - 1].isBlank()) from--
+            var to = end
+            while (to < lines.size && lines[to].isBlank()) to++
+            lines.subList(from, to).clear()
+            i = from
+        }
+        return lines.joinToString("\n").trim()
+    }
     /** 能当截图落点的行：带时间戳的正文行（标题、表格、代码块都不算）。 */
     private fun anchorsOf(lines: List<String>): List<Int> {
         val out = ArrayList<Int>()
@@ -837,11 +1249,44 @@ object LlmDigest {
            成立条件、例子、易错点、考点；一条只说一件事，不要写成流水账；
         3. 这一步只做「提取和清洗」，不要重排体系、不要合并小节，也绝不补充原文没有的内容；
         4. 每个要点开头保留对应时间戳，写成反引号包起来的形式，例如 `[03:12]`；
-        5. 带「[图示]」的行是老师当时展示的课件截图：App 会把图片和它的说明自动插回对应位置，
-           你不用管图放在哪，只要把图上的信息揉进这一段的要点里，并在相关要点上保留这一行的时间戳；
-           不要在正文里写「[图示]」，也不要把图上的条目原样再抄一遍；
+        5. 「[图示]」行是老师当时展示的课件截图，紧跟其后缩进列出的每一条，都是视觉模型从这张图上
+           读出的真实内容（文字、表格、公式、代码、数字）；它是正式素材：**每一条都要**整理成这一
+           小节的笔记要点，一条都不能漏；图上的数字、地址、表头、公式、代码、专有名词要**原样
+           保留**，不要概括成一句话、不要意译；把这一行的时间戳留在对应要点上，也别写「[图示]」
+           这几个字 —— App 会按时间戳把图片本身插到对应位置；
         6. 删掉寒暄、重复和口头禅；老师强调「要记住 / 必考 / 作业」的内容必须保留；
-        7. 按上下文改正明显的同音字错误，把没说完的话补完整，但不要编造。
+        7. 按上下文改正明显的同音字错误，把没说完的话补完整，但不要编造；
+        8. 直接输出内容本身，不要用 ``` 把整张卡包起来（真的代码才用代码块）。
+    """.trimIndent()
+
+    /**
+     * 长课第一步：先理一份全局提纲（只有骨架和要点短语，不写成段的讲解）。
+     *
+     * 这一步的存在就是为了「长课不被压扁」：提纲很小，所以一节课的体系能一次看全；接下来每一节
+     * 再拿着自己那段素材单独写，输出预算按节走，课再长也不会越写越薄。
+     */
+    private val OUTLINE = """
+        你是课程笔记的结构编辑。下面是一整堂课分段的「素材卡」，每句带 [mm:ss] 时间戳。
+
+        先在心里想好这节课的体系，然后只输出一份**提纲**（不要写成段的讲解，全篇 600 字以内）：
+        第一行：「题目：xxx」—— xxx 是这节课的主题，12-20 个字，不要编号、不要书名号、不要句号；
+        第二行：一条引用块导语（以 "> " 开头），一句话说明这节课讲什么、学完能做什么；
+        然后按内容分 3-8 个「## 大节」，标题写成这节课真实讲的东西（「两个容易混的公式」这种），
+        不要每篇都用同一批标题；内容多的大节下面可以用 "### 小节" 再分一层；
+        每个大节下面用 "- `[mm:ss]` 一句话" 列出这一节要讲的要点（每条不超过 25 字，只写要点本身）；
+        素材里「[图示]」后面列出的图上内容，是课件截图里的真实信息，把关键内容写进对应位置的要点里，
+        并保留它原来的时间戳。
+        没讲的东西不要写：没讲公式就不要术语表，没布置作业就不要作业小节。
+        只输出 Markdown 提纲，不要任何说明文字，也不要用 ``` 把整篇包起来。
+    """.trimIndent()
+
+    /** 素材太长、提纲需要分组出的时候，把几份提纲并成一份。 */
+    private val OUTLINE_MERGE = """
+        下面是同一堂课分几段理出的几份提纲，内容有重复、大节可能对不上。
+        请把它们并成**一份**连贯的提纲：同一个主题的大节合并成一个，重复的要点只留一条，
+        顺序按课程原本的先后走，时间戳照旧保留（别把图上的要点和它的时间戳弄丢）。
+        格式不变：第一行「题目：xxx」，第二行 "> " 导语，然后是 3-8 个「## 大节」+ 要点。
+        只输出提纲，不要说明文字，也不要用 ``` 包起来。
     """.trimIndent()
 
     /**
@@ -860,20 +1305,24 @@ object LlmDigest {
         所以每个知识点都要说清「是什么、为什么、怎么用、什么情况下会错」，
         而不是把老师说过的话压缩一遍。
 
-        结构要跟着这节课的内容走，不要套模板：
-        - 以例题、讲解为主的课，就按「题目 → 思路 → 步骤 → 结论」组织；
-        - 以概念、原理为主的课，就按「定义 → 为什么 → 适用条件和边界 → 易错点」组织；
-        - 以操作、流程为主的课，就按「准备 → 步骤 → 常见坑」组织；
+        怎么写完全由这节课本身决定 —— 不要套模板，也不要把每一课都整理成一个样子：
+        - 先自己判断这是什么课，再决定怎么组织：以例题、讲解为主的课，按「题目 → 思路 → 步骤 →
+          结论」组织；以概念、原理为主的课，按「定义 → 为什么 → 适用条件和边界 → 易错点」组织；
+          以操作、流程为主的课，按「准备 → 步骤 → 常见坑」组织；只讲了一件小事的短课，
+          三两段讲透就行，不必分大节，也不必凑出「知识框架」这种栏目。
         - 小标题写这节课真实讲的东西（「两个容易混的公式」「为什么要先归一化」），
           不要每篇都用同一批小标题。
-        **没有内容的小节一律不要出现**：这节课没布置作业，就不要有「作业」这一节；
-        没讲公式，就不要术语表；老师没提考点，就不要考点小节。宁可短，不要空壳。
+        - 栏目是「有内容才写」，不是「照着填」：没讲公式就不要术语表，没提考点就不要考点小节，
+          没布置作业就不要作业小节 —— 空壳小节对复习没有任何价值。
 
-        直接输出 Markdown，不要任何寒暄、说明或结尾语。可以参照下面这个结构，按内容增删：
+        直接输出 Markdown，不要任何寒暄、说明或结尾语。下面只是一份写法示意，按这节课的内容增删，
+        不需要的栏目整段都不要写：
 
-        第一行是一条引用块导语（以 "> " 开头）：一句话说明这节课讲什么、学完能做什么。
+        第一行写这节课的题目，格式固定成「题目：xxx」—— xxx 就是这节课讲的主题，12-20 个字，
+        不要编号、不要书名号、不要句号；这一行用来给笔记命名，App 会把它从正文里去掉；
+        第二行是一条引用块导语（以 "> " 开头）：一句话说明这节课讲什么、学完能做什么。
 
-        ## 本课知识框架
+        ## 本课知识框架        ← 只在内容真的成体系、有多个分支时才写；短课不要这一节
         用缩进列表画出这一课的体系：主题 → 分支 → 具体知识点，3-8 行，让人一眼看到全貌。
 
         ## 一、大节标题
@@ -885,7 +1334,8 @@ object LlmDigest {
         - ……
 
         ## 二、大节标题
-        （同上；大节数量按内容定，一般 2-6 个，序号用中文数字）
+        （同上；大节数量按内容定，一般 2-6 个，序号用中文数字；内容少就只写一个大节，
+         或干脆不分节、直接列要点）
 
         ## 术语与公式        ← 只在真的出现了术语 / 公式时写
         | 术语 / 公式 | 含义 |
@@ -896,20 +1346,35 @@ object LlmDigest {
 
         ## 一句话总结
 
-        ## 作业与下节预告    ← 只在老师布置了作业或预告了下节课时写，没有就整节不要
+        ## 作业与下节预告    ← 只在老师布置了作业或预告了下节课时写；没有就**整节删掉**，
+                              别用「本节课没有布置作业」这种话占位，也别猜下节课讲什么
 
         要求：
-        1. 层级最多三层（## / ### / -），不要用 ####，也不要自己写 "#" 大标题（标题由 App 添加）；
-        2. **不要堆标题**：一个小节下 3-6 条要点就够，把零碎的话归并成完整的句子，别一句话一个标题；
-        3. 保留原文的时间戳，写成反引号包起来的形式，例如 `[03:12]`，放在对应要点开头或句末；
-        4. 素材里带「[图示]」（或一张课件截图的说明）的地方，是老师当时展示的课件；
-           App 会把图片连同它的看图说明自动插到对应时间戳的位置，你只要把这一处的时间戳留在
-           相关要点上，别在正文里写「[图示]」，也别把图上的条目重复抄一遍；
+        1. **每条要点开头都要带它自己的时间戳**，写成反引号包起来的形式，例如 `[03:12]`（放要点开头或
+           句末都行，但不能没有）—— App 靠时间戳把课件截图插回「当时正在讲的那句话」下面，整篇少了
+           时间戳，图就只能全堆到文末，笔记就散了；这些时间戳只是给 App 定位用的记号，**成品里不会显示**，
+           所以别在正文里另写「见第几分钟」这类话；
+        2. 层级最多三层（## / ### / -），不要用 ####，也不要自己写 "#" 大标题（标题由 App 添加，
+           你只要在最前面留一行「题目：xxx」）；
+        3. **不要堆标题**：一个小节下 3-6 条要点就够，把零碎的话归并成完整的句子，别一句话一个标题；
+        4. 素材里带「[图示]」的段落是老师展示的课件截图，紧跟其后缩进列出的每一条，都是视觉模型
+           从图上读出的真实内容：它们是正式素材，**必须逐条**整理进所在知识点的要点（定义、公式、
+           表格、流程、结论各成一条，写成通顺完整的话，一条都不能漏）；内容多的时候（表格、代码、
+           一串参数或步骤），就在这条要点下面用缩进子要点（两格缩进 + "- "）逐条列出，别为了压短
+           丢掉它们；图上的数字、地址、表头、公式、代码、专有名词**原样保留**，不要概括、不要
+           意译；不要把图上的栏目名（「标题」「定义」「要点」这类）原样抄成要点，要写成完整的一句话；
+           也不要照抄「这张图片展示了…」这类描述，正文里别写「[图示]」几个字 —— App 会按时间戳把
+           图片本身插到对应位置；
         5. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
         6. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
         7. 笔记里只写知识本身，不要出现「这段转写」「视频里」「录音中」这类话；
-        8. **全篇 500-900 字**：这是在写复习用的提纲，不是课堂实录。每个要点一句话说完，
-           不复述老师原话、不写铺垫、不做名词解释的堆砌；内容少就写更短。
+        8. **长度由内容定，既别压扁也别灌水**：一节课的内容写 800-1500 字，内容少的课写短一点就行。
+           每个要点都写成完整的一句话（结论 + 关键条件或原因），不要只留一个名词、也不要复述老师
+           原话；素材里有课件截图的，图上的细节不计入这个长度 —— 该留的表格、代码、数字要留住；
+        9. **同一件事只写一遍**：同一个知识点不要在两个大节里各写一遍（「MAC 地址表记录端口」写在
+           第一节，就别在第二节再来一条一模一样的）；一节写完就结束，不要加「本节介绍了……」这种
+           过场话，也不要把同一句话换个说法又说一遍；
+        10. 整篇**不要用 ``` 包起来** —— 代码块只用在真的代码上，笔记本身不要塞进代码块。
     """.trimIndent()
 
     /** 单段（或素材卡）直接出终稿，用的就是骨架本身。 */
@@ -919,9 +1384,38 @@ object LlmDigest {
         下面是同一堂课分几段整理出的几版笔记，内容可能有重复、小节可能对不上。
         请把它们合并成**一份**不重复、层级连贯的体系化笔记：把同一主题的要点归到同一个大节下，
         重复的小节和要点只留一条，时间戳照旧保留。
-        合并只做归并和去重：不要发明原文没有的新内容，也不要把截图处的时间戳弄丢。
+        合并只做归并和去重：不要发明原文没有的新内容，也不要把截图处的时间戳、和图上识别出的
+        内容弄丢（图上的数字、地址、公式要原样保留）。
 
     """.trimIndent() + SKELETON
+
+    /**
+     * 长课第三步：按提纲把一个「大节」写成正式的笔记。
+     *
+     * 每一节单独一次请求，所以输出预算按节走（[SECTION_MAX_TOKENS]）—— 这就是长课不被压扁的原因；
+     * 顺带各节可以并行发，两小时的课也不会比半小时的课慢多少。
+     */
+    private val SECTION = """
+        你在整理一堂网课的笔记。下面会给你这份笔记的**全局提纲**（了解这节课的整体体系）、
+        要写的那一节标题与要点、以及这一节对应的课堂素材（语音转写和课件截图说明，
+        每句带 [mm:ss] 时间戳，可能有同音字识别错误、口水话和重复）。
+
+        请只写这一个小节，直接输出 Markdown：
+        1. 第一行是这一节的标题，用「## 」开头，和提纲里的标题保持一致（可以小幅润色）；
+        2. 接着按提纲里的要点顺序把这几点讲清楚，用 "- " 列表；每条写成完整的一句话
+           （结论 + 关键条件或原因），不要只留一个名词，也不要复述老师的口水话；
+        3. **每条要点开头保留它自己的时间戳**，写成反引号包起来的形式，例如 `[03:12]` ——
+           App 靠时间戳把课件截图插回对应位置，丢了时间戳图就只能堆到文末；这些记号只是给 App 定位
+           用的，**成品里不会显示**；
+        4. 素材里「[图示]」后面缩进列出的每一条，都是视觉模型从课件截图上读出的真实内容：
+           必须逐条整理进对应的要点里，数字、地址、表头、公式、代码、专有名词原样保留；
+           内容多时用缩进子要点列出；不要把「标题」「定义」「要点」这类栏目名抄成小标题，
+           也不要写「这张图展示了……」这类话；
+        5. 老师强调的重点、考点、作业必须保留；明显的同音字错误按上下文改正，只改错、不加戏；
+        6. 只写这一节：不要写这节课的题目、导语、总结，也不要替别的小节写内容；
+        7. 这一节写 3-8 条要点就够了（内容多可以用 "### " 再分一层）；同一件事只说一遍，
+           不要为了写长而重复；整节**不要用 ``` 包起来**。
+    """.trimIndent()
 
     /** 视觉模型的提示词。要短、要具体，因为免费视觉模型上下文都不大。 */
     private val VISION_SYS = """

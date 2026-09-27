@@ -20,6 +20,7 @@ import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ActivityDetailBinding
 import com.lecture.notes.util.Formats
 import com.lecture.notes.util.Prefs
+import com.lecture.notes.util.ShareKit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -157,12 +158,8 @@ class DetailActivity : AppCompatActivity() {
                 toast(getString(R.string.detail_copied))
             }
 
-            R.id.action_share -> {
-                val i = Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_SUBJECT, n.title)
-                    .putExtra(Intent.EXTRA_TEXT, NoteStore.fullMarkdown(n))
-                startActivity(Intent.createChooser(i, getString(R.string.detail_share)))
-            }
+            // 分享要挑格式：纯文本 / Markdown 文件 / 自带排版的网页文件
+            R.id.action_share -> ShareKit.share(this, n, NoteStore.fullMarkdown(n))
 
             R.id.action_export -> export(n)
             R.id.action_rename -> renameDialog(n)
@@ -215,6 +212,7 @@ class DetailActivity : AppCompatActivity() {
                 val t = input.text.toString().trim()
                 if (t.isNotEmpty()) {
                     n.title = t
+                    n.autoTitle = false   // 用户自己敲的名字：以后整理多少次都不动它
                     n.updatedAt = System.currentTimeMillis()
                     NoteStore.saveMeta(n)
                     binding.toolbar.title = t

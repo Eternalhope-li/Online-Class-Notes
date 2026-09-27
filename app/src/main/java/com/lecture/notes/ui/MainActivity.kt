@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.widget.doOnTextChanged
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.snackbar.Snackbar
 import com.lecture.notes.R
 import com.lecture.notes.core.CaptureService
@@ -49,6 +50,12 @@ class MainActivity : AppCompatActivity() {
 
     /** 列表筛选「只看未整理」：整理完一批之后，剩下的那几篇一眼看得见。 */
     private var filterUndigested = false
+
+    /** 当前页签：「记录」放录音和转写，「笔记」只放整理好的整理稿。 */
+    private var tab = TAB_RECORDS
+
+    /** 刚切过页签：列表得回到顶上，别让上一页的滚动位置带到下一页。 */
+    private var scrollTopOnNextShow = false
 
     /**
      * 到这个时刻为止，列表上的点击一律不算。
@@ -98,6 +105,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        tab = savedInstanceState?.getInt(KEY_TAB) ?: TAB_RECORDS
 
         binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -142,6 +150,7 @@ class MainActivity : AppCompatActivity() {
             onQueryChanged(binding.search.text?.toString().orEmpty())
         }
         syncFilter()
+        setupTabs()
 binding.recordingBar.setOnClickListener { openLive() }
         // 多选：顶栏那排按钮 + 返回键。返回键只在多选里拦一下，别的时候照常退出页面。
         binding.selectClose.setOnClickListener { exitSelect() }
@@ -200,6 +209,63 @@ binding.recordingBar.setOnClickListener { openLive() }
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // 转屏 / 被系统回收再回来：还停在原来那一页
+        outState.putInt(KEY_TAB, tab)
+    }
+
+    /**
+     * 顶上那个滑块：「记录」是录音和转写，「笔记」是整理好的整理稿。
+     *
+     * 做成左右两块、而不是一个列表里分两组：用户要的是「打开哪边就是哪样东西」——
+     * 「记录」点进去是这节课的原始转写，「笔记」点进去直接就是整理稿。
+     */
+    private fun setupTabs() {
+        binding.tabRecords.setOnClickListener { selectTab(TAB_RECORDS) }
+        binding.tabNotes.setOnClickListener { selectTab(TAB_NOTES) }
+        paintTabs(false)
+        // 蓝底那块要等布局完才知道一半有多宽；转屏重建之后也靠这一下摆正
+        binding.tabsRail.post { paintTabs(false) }
+    }
+
+    private fun selectTab(which: Int) {
+        if (tab == which) return
+        tab = which
+        // 换了页签，选中的那几篇也跟着换了一批，先把多选退掉
+        exitSelect()
+        scrollTopOnNextShow = true
+        paintTabs(true)
+        syncFilter()
+        reload()
+    }
+
+    /** 蓝底滑块滑到选中的那一半，两个字的颜色跟着深浅。 */
+    private fun paintTabs(animate: Boolean) {
+        val on = MaterialColors.getColor(binding.tabs, com.google.android.material.R.attr.colorOnPrimary)
+        val off = MaterialColors.getColor(binding.tabs, com.google.android.material.R.attr.colorOnSurfaceVariant)
+        binding.tabRecords.setTextColor(if (tab == TAB_RECORDS) on else off)
+        binding.tabNotes.setTextColor(if (tab == TAB_NOTES) on else off)
+        val to = if (tab == TAB_NOTES) binding.tabsRail.width / 2f else 0f
+        if (animate) {
+            binding.tabsRail.animate().translationX(to).setDuration(180).start()
+        } else {
+            binding.tabsRail.translationX = to
+        }
+    }
+
+    /** 切页签时按当前搜索词立刻重来一遍，不走搜索那 200ms 的防抖。 */
+    private fun reload() {
+        searchJob?.cancel()
+        searchJob = lifecycleScope.launch {
+            val q = binding.search.text?.toString().orEmpty()
+            val list = withContext(Dispatchers.IO) {
+                if (q.isBlank()) NoteStore.listMeta() else NoteStore.search(q)
+            }
+            showList(list, q)
+        }
+    }
+
     // ------------------------------------------------------------------ 列表
 
     private fun onQueryChanged(q: String) {
@@ -222,18 +288,35 @@ binding.recordingBar.setOnClickListener { openLive() }
      * 让「保存下来的笔记都在哪」一目了然 —— 之前只有一列卡片，没有任何计数。
      */
     private fun showList(list: List<NoteStore.Meta>, query: String) {
-        val shown = if (filterUndigested) list.filter { !it.hasDigest } else list
+        // 「笔记」页签只放已经整理好的；「记录」页签是全部录音 —— 整理过的也留着，
+        // 那节课的原始转写还在用（「记录」里点开看转写，「笔记」里点开看整理稿）。
+        val tabbed = if (tab == TAB_NOTES) list.filter { it.hasDigest } else list
+        val shown = if (tab == TAB_RECORDS && filterUndigested) tabbed.filter { !it.hasDigest } else tabbed
         adapter.submit(shown)
-        binding.empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
-        binding.emptyText.text = getString(
-            if (filterUndigested && query.isBlank()) R.string.main_empty_filtered else R.string.main_empty
-        )
-        val total = list.sumOf { it.durationMs }
+        if (scrollTopOnNextShow) {
+            scrollTopOnNextShow = false
+            binding.list.scrollToPosition(0)
+        }
+        if (shown.isEmpty()) {
+            binding.empty.visibility = View.VISIBLE
+            binding.emptyText.text = getString(
+                when {
+                    tab == TAB_NOTES -> R.string.main_tab_notes_empty
+                    query.isNotBlank() -> R.string.main_empty_search
+                    filterUndigested -> R.string.main_empty_filtered
+                    else -> R.string.main_empty
+                }
+            )
+        } else {
+            binding.empty.visibility = View.GONE
+        }
+        val total = shown.sumOf { it.durationMs }
         binding.notesCount.text = when {
             query.isNotBlank() -> getString(R.string.main_notes_hit, shown.size)
+            tab == TAB_NOTES -> getString(R.string.main_tab_notes_count, shown.size)
             filterUndigested -> getString(R.string.main_notes_undigested, shown.size)
-            total >= 60_000 -> getString(R.string.main_notes_count_time, shown.size, Formats.duration(total))
-            else -> getString(R.string.main_notes_count, shown.size)
+            total >= 60_000 -> getString(R.string.main_tab_records_count_time, shown.size, Formats.duration(total))
+            else -> getString(R.string.main_tab_records_count, shown.size)
         }
     }
 
@@ -245,8 +328,13 @@ binding.recordingBar.setOnClickListener { openLive() }
         }
     }
 
-    /** 筛选按钮的文字就是「点它会怎样」：开着的时候写着「显示全部」；暗一点的是没开。 */
+    /**
+     * 筛选按钮的文字就是「点它会怎样」：开着的时候写着「显示全部」；暗一点的是没开。
+     *
+     * 只在「记录」页签露面 ——「笔记」里全是整理好的，这个开关在那边没有意义。
+     */
     private fun syncFilter() {
+        binding.filter.visibility = if (tab == TAB_RECORDS) View.VISIBLE else View.GONE
         binding.filter.text = getString(
             if (filterUndigested) R.string.main_filter_show_all else R.string.main_filter_only_undigested
         )
@@ -280,8 +368,15 @@ binding.recordingBar.setOnClickListener { openLive() }
      */
     private fun openTrash() = startActivity(Intent(this, TrashActivity::class.java))
 
+    /**
+     * 点开一篇。
+     *
+     * 「记录」页签点进去是这节课的原始转写，「笔记」页签点进去直接就是整理稿 ——
+     * 省掉「先进详情页、再点一下看整理稿」那一步。
+     */
     private fun openNote(meta: NoteStore.Meta) {
-        startActivity(Intent(this, DetailActivity::class.java).putExtra(DetailActivity.EXTRA_ID, meta.id))
+        val target = if (tab == TAB_NOTES) DigestActivity::class.java else DetailActivity::class.java
+        startActivity(Intent(this, target).putExtra(DetailActivity.EXTRA_ID, meta.id))
     }
 
     // ------------------------------------------------------------------ 多选
@@ -530,5 +625,12 @@ binding.recordingBar.setOnClickListener { openLive() }
          * 删除只是挪进回收站，来得及捞回来 —— 但提示得由还活着的那个页面来弹。
          */
         var pendingUndoIds: List<String> = emptyList()
+
+        /** 首页两个页签：0 = 记录（录音 + 转写），1 = 笔记（整理稿）。 */
+        private const val TAB_RECORDS = 0
+        private const val TAB_NOTES = 1
+
+        /** 转屏 / 重建之后还停在原来那一页。 */
+        private const val KEY_TAB = "tab"
     }
 }

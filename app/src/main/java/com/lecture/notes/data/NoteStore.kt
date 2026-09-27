@@ -88,6 +88,8 @@ object NoteStore {
         j.put("updatedAt", note.updatedAt)
         j.put("durationMs", note.durationMs)
         j.put("source", note.source)
+        j.put("autoTitle", note.autoTitle)
+        j.put("aiTitle", note.aiTitle)
         j.put("count", note.entries.size)
         j.put("chars", note.charCount)
         j.put("stars", note.starCount)
@@ -214,11 +216,27 @@ object NoteStore {
         return note
     }
 
-    fun rename(id: String, title: String) {
+    /**
+     * 改名。[auto] 为真表示这个名字还是 App 自动起的 —— AI 整理出这节课的题目之后还能再换掉；
+     * 用户自己在对话框里敲的名字一律传 false，之后整理多少次都不会动它。
+     */
+    fun rename(id: String, title: String, auto: Boolean = false, ai: Boolean = false) {
         val j = readMeta(id) ?: return
         j.put("title", title)
+        j.put("autoTitle", auto)
+        j.put("aiTitle", ai)
         j.put("updatedAt", System.currentTimeMillis())
         metaFile(id).writeText(j.toString())
+    }
+
+    /**
+     * 老笔记的 meta 里没有 autoTitle 字段，退回看名字本身：像「网课笔记 09-27 17:22」
+     * 「课堂截图 17:22」这种一看就是 App 起的，可以换；其余都当成用户自己的，不动。
+     */
+    private fun looksAutoTitle(title: String): Boolean {
+        val t = title.trim()
+        return t.isBlank() || t.startsWith("网课笔记") || t.startsWith("课堂截图") ||
+            t.startsWith("新笔记")
     }
 
     /**
@@ -373,7 +391,9 @@ object NoteStore {
             createdAt = j.optLong("createdAt"),
             updatedAt = j.optLong("updatedAt"),
             durationMs = j.optLong("durationMs"),
-            source = j.optString("source", "mic")
+            source = j.optString("source", "mic"),
+            autoTitle = if (j.has("autoTitle")) j.optBoolean("autoTitle") else looksAutoTitle(j.optString("title")),
+            aiTitle = j.optBoolean("aiTitle")
         )
         val f = linesFile(id)
         if (f.exists()) {

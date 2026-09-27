@@ -34,7 +34,18 @@ class Note(
     val createdAt: Long,
     var updatedAt: Long,
     var durationMs: Long,
-    var source: String
+    var source: String,
+    /**
+     * 标题还是 App 自动起的（「网课笔记 09-27 17:22」或者从开头几句里挑的一句），
+     * 用户没有自己命名过。AI 整理出这节课的题目之后，可以拿题目换掉这个名字；
+     * 用户自己改过的名字是 false —— 整理多少次都一个字不动。
+     */
+    var autoTitle: Boolean = true,
+    /**
+     * 名字是 AI 整理时按这节课的题目起的。这种名字只起一次 —— 之后再点「重新 AI 整理」，
+     * 名字不会再被换掉：不然用户重跑一次，笔记名就跟着变一次，翻笔记时根本对不上。
+     */
+    var aiTitle: Boolean = false
 ) {
     val entries = ArrayList<Entry>()
 

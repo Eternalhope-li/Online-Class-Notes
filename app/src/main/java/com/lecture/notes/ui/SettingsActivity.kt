@@ -1,6 +1,7 @@
 package com.lecture.notes.ui
 
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
@@ -140,6 +141,8 @@ class SettingsActivity : AppCompatActivity() {
         watch(binding.llmKey) { Prefs.llmKey = it }
         watch(binding.llmModel) { Prefs.llmModel = it }
         binding.btnTestLlm.setOnClickListener { testLlm() }
+        binding.btnPasteKey.setOnClickListener { pasteKey() }
+        binding.llmHelp.setOnClickListener { showLlmHelp() }
         binding.btnPreview.setOnClickListener {
             startActivity(
                 Intent(this, DigestActivity::class.java).putExtra(DigestActivity.EXTRA_DEMO, true)
@@ -321,6 +324,37 @@ class SettingsActivity : AppCompatActivity() {
         msg.contains("401") || msg.contains("403") -> getString(R.string.settings_vision_auth, msg)
         msg.startsWith("网络不通") || msg.contains("等待超时") -> getString(R.string.settings_vision_net, msg)
         else -> getString(R.string.settings_vision_fail, msg)
+    }
+
+    /**
+     * 从剪贴板把 Key 粘进来。
+     *
+     * 平板/手机上「复制 Key → 切回 App → 长按输入框 → 点粘贴」这套操作很容易在长按那一步点错
+     * （选中文字、拉到别的行），所以直接给一个按钮，一次成型，顺手把两头的空白和引号修掉。
+     */
+    private fun pasteKey() {
+        val cm = getSystemService(ClipboardManager::class.java)
+        val raw = cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
+        val key = raw.orEmpty().trim().trim('"', '\'', '`', ' ')
+        if (key.isEmpty()) {
+            toast(getString(R.string.settings_llm_paste_empty))
+            return
+        }
+        binding.llmKey.setText(key)
+        binding.llmKey.setSelection(key.length)
+        toast(getString(R.string.settings_llm_pasted))
+    }
+
+    /** 在线整理的配置帮助：三步走 + 一条直达智谱 Key 页面的链接。 */
+    private fun showLlmHelp() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.settings_llm_help_title)
+            .setMessage(R.string.settings_llm_help_body)
+            .setNeutralButton(R.string.settings_llm_help_open) { _, _ ->
+                openUrl("https://open.bigmodel.cn/usercenter/apikeys")
+            }
+            .setPositiveButton(R.string.common_ok, null)
+            .show()
     }
 
     /** 配置帮助：一段人话 + 一条直达智谱 Key 页面的链接。 */

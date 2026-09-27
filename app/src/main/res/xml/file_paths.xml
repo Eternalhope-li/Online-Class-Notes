@@ -3,4 +3,8 @@
     <files-path
         name="notes"
         path="notes/" />
+    <!-- 分享 Markdown / HTML 文件时临时写在这里 -->
+    <cache-path
+        name="share"
+        path="share/" />
 </paths>

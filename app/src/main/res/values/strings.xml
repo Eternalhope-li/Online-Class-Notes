@@ -11,9 +11,14 @@
 
     <string name="main_search_hint">搜索笔记内容</string>
     <string name="main_empty">还没有笔记\n点下面的「开始记录」，老师讲的话会自动变成文字</string>
-    <string name="main_notes_count">我的笔记 · 共 %1$d 篇</string>
-    <string name="main_notes_count_time">我的笔记 · 共 %1$d 篇 · 累计 %2$s</string>
-    <string name="main_notes_undigested">我的笔记 · 待整理 %1$d 篇</string>
+    <string name="main_tab_records">记录</string>
+    <string name="main_tab_notes">笔记</string>
+    <string name="main_tab_records_count">共 %1$d 段记录</string>
+    <string name="main_tab_records_count_time">共 %1$d 段记录 · 累计 %2$s</string>
+    <string name="main_tab_notes_count">共 %1$d 篇笔记</string>
+    <string name="main_tab_notes_empty">还没有整理好的笔记\n在「记录」里选一篇，整理成知识点笔记</string>
+    <string name="main_empty_search">没有找到匹配的内容\n换个词试试</string>
+    <string name="main_notes_undigested">待整理 · 共 %1$d 段</string>
     <string name="main_filter_only_undigested">只看未整理</string>
     <string name="main_filter_show_all">显示全部</string>
     <string name="main_empty_filtered">这一批都整理完了\n切回「显示全部」能看到全部笔记</string>
@@ -75,6 +80,15 @@
     <string name="detail_meta">%1$s · %2$s · %3$d 句 · %4$d 字 · 重点 %5$d 处</string>
     <string name="detail_plain_hint">每行开头的时间戳（如 [01:23]）请保留，方便对应课程进度</string>
     <string name="detail_empty">这篇笔记还没有内容</string>
+    <string name="share_title">分享笔记</string>
+    <string name="share_tip">选一种格式：纯文本适合发到聊天窗口；Markdown 适合别的笔记软件；网页文件是单文件、自带排版和截图，双击就能看。</string>
+    <string name="share_plain">纯文本（发聊天 / 备忘录）</string>
+    <string name="share_md">Markdown 文件（.md）</string>
+    <string name="share_html">网页文件（.html，含排版和截图）</string>
+    <string name="share_plain_desc">直接粘进聊天窗口、备忘录；消息气泡里会保留标题和要点</string>
+    <string name="share_md_desc">.md 源文件，导入 Obsidian / Typora / 别的笔记软件</string>
+    <string name="share_html_desc">.html 单文件，图片内嵌、自带排版，双击就能看，也能打印成 PDF</string>
+    <string name="share_fail">分享失败：%1$s</string>
     <string name="common_ok">确定</string>
     <string name="common_cancel">取消</string>
     <string name="common_undo">撤销</string>
@@ -99,6 +113,7 @@
 <string name="settings_about">关于</string>
 <string name="settings_about_version">版本 %1$s</string>
     <string name="settings_about_text">完全离线运行：不联网、不上传任何音频或文字。\n语音识别引擎：sherpa-onnx 1.13.8（Apache-2.0）\n识别模型：SenseVoice-Small 中文 int8（约 228 MB，随安装包内置）\n分段与静音检测：Silero VAD\n知识点整理：本地算法（免费、秒出）+ 可选大模型\n\n识别结果可能存在误差，请以课程原文为准。</string>
+    <string name="settings_about_author">作者 eternalhope　·　github.com/Eternalhope-li/Online-Class-Notes</string>
 
     <string name="perm_need_mic">需要录音权限才能把老师的话变成文字</string>
     <string name="perm_denied">没有拿到权限，暂时无法记录</string>
@@ -190,6 +205,20 @@
 <string name="settings_llm_preset">常用服务商</string>
 <string name="settings_llm_state_ok">✓ 已配置：%1$s（%2$s）—— 点「AI 整理」时就调用它</string>
 <string name="settings_llm_state_none">⚠ 还没填 API Key —— 不填也能用，只是没有 AI 整理、也不好看图</string>
+    <string name="settings_llm_help">怎么配置？</string>
+    <string name="settings_llm_help_title">三步把 AI 整理接上</string>
+    <string name="settings_llm_help_open">去智谱拿 Key（免费）</string>
+    <string name="settings_llm_help_body">1. 选服务商：点上面任意一个「常用服务商」，接口地址和模型名会自动填好。最省事的是智谱 —— open.bigmodel.cn 用手机号注册，在「API Keys」里复制一把 Key；glm-4-flash（整理）和 glm-4v-flash（看图）都是免费的。\n\n2. 贴 Key：把复制到的 Key（形如 sk-…）粘进「API Key」，也是这一步最容易出错的地方 —— 结尾别多带空格。\n\n3. 点「测试连接」：模型回一句「正常」就通了。整理时才会把文字发给该服务商，录音永远不上传。\n\n也可以换成别的服务商：DeepSeek（deepseek-chat）、通义（qwen-plus）、Kimi（moonshot-v1-8k）。地址填到服务商给的那一层就行，App 会自己补 /chat/completions。</string>
+    <string name="settings_llm_paste">粘贴 Key</string>
+    <string name="settings_llm_pasted">已粘贴，点「测试连接」验一下</string>
+    <string name="settings_llm_paste_empty">剪贴板里没有文字</string>
+    <string name="settings_llm_base_helper">例：https://open.bigmodel.cn/api/paas/v4（App 会自动补 /chat/completions）</string>
+    <string name="settings_llm_key_helper">在服务商控制台复制，形如 sk-…；只存在本机，不会上传</string>
+    <string name="settings_llm_model_helper">对话模型：glm-4-flash（免费）/ deepseek-chat / moonshot-v1-8k / qwen-plus</string>
+    <string name="settings_vision_model_label">看图模型名</string>
+    <string name="settings_vision_model_helper">看图要用视觉模型：glm-4v-flash（免费）/ qwen-vl-max</string>
+    <string name="settings_vision_base_helper">留空就用上面「在线整理」的地址</string>
+    <string name="settings_vision_key_helper">留空就用上面「在线整理」的 Key</string>
     <string name="preset_zhipu">智谱 GLM</string>
     <string name="preset_deepseek">DeepSeek</string>
     <string name="preset_kimi">Kimi</string>

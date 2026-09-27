@@ -19,6 +19,7 @@ import com.lecture.notes.util.DemoNote
 import com.lecture.notes.util.MiniMarkdown
 import com.lecture.notes.util.NoteDigest
 import com.lecture.notes.util.Prefs
+import com.lecture.notes.util.ShareKit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -283,13 +284,9 @@ class DigestActivity : AppCompatActivity() {
                 toast(getString(R.string.digest_copied))
             }
 
-            R.id.action_share -> {
-                val i = Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_SUBJECT, n.title)
-                    .putExtra(Intent.EXTRA_TEXT, MiniMarkdown.plain(markdown))
-                    .putExtra(Intent.EXTRA_HTML_TEXT, MiniMarkdown.toHtml(markdown, n.title))
-                startActivity(Intent.createChooser(i, getString(R.string.digest_share)))
-            }
+            // 分享这一步要挑格式：聊天窗口只认纯文本，别的笔记软件要 Markdown，
+            // 想连排版和截图一起带走就用单文件的网页
+            R.id.action_share -> ShareKit.share(this, n, markdown)
 
             R.id.action_export -> export(n)
             else -> return false

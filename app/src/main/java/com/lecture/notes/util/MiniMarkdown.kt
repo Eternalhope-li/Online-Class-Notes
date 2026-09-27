@@ -105,7 +105,64 @@ object MiniMarkdown {
         return if (t == "-" || t == "*" || t == "+") "" else t
     }
 
-    fun parse(md: String): List<Block> {
+    fun parse(md: String): List<Block> = parseBlocks(demoteFences(md))
+
+    /**
+     * 模型把正文塞进 ``` 的兜底。
+     *
+     * glm-4-flash 时不时把一整段（甚至整篇）笔记包进代码块，排版视图里就成了一片带 `##`、`- `
+     * 的源码 —— 用户的原话是「整理之后全是 markdown 源码」，而且 App 认不出里面的时间戳，
+     * 截图也就插不回去。凡是「装的是正文」的代码块（里面有 markdown 标题行），一律拆掉围栏
+     * 按正文处理；真的代码（`fun main() {`、命令行、缩进的代码行）不会出现 `## 标题`，原样留着。
+     *
+     * 放在解析入口上，渲染和导出 HTML 两条链路就都稳了，磁盘上那些老整理稿也不用重跑 AI。
+     */
+    fun demoteFences(md: String): String {
+        if (!md.contains("```")) return md
+        val src = md.replace("\r\n", "\n").replace('\r', '\n')
+        val lines = src.split('\n')
+        val out = StringBuilder(src.length)
+        var i = 0
+        while (i < lines.size) {
+            if (!lines[i].trimStart().startsWith("```")) {
+                out.append(lines[i]).append('\n')
+                i++
+                continue
+            }
+            var end = i + 1
+            while (end < lines.size && !lines[end].trimStart().startsWith("```")) end++
+            val inner = lines.subList(i + 1, end)
+            val closed = end < lines.size
+            if (looksLikeNote(inner)) {
+                // 这层围栏里装的是正文：拆掉围栏，内容原样留成 markdown
+                for (l in inner) out.append(l).append('\n')
+            } else {
+                out.append(lines[i]).append('\n')
+                for (l in inner) out.append(l).append('\n')
+                if (closed) out.append(lines[end]).append('\n')
+            }
+            i = if (closed) end + 1 else lines.size
+        }
+        val res = out.toString()
+        return if (src.endsWith("\n")) res else res.trimEnd('\n')
+    }
+
+    /** 围栏里的东西到底是不是笔记正文：有 markdown 标题行、并且至少两行 markdown 结构。 */
+    private fun looksLikeNote(inner: List<String>): Boolean {
+        if (inner.any { HEAD_RE.containsMatchIn(it.trimStart()) } && mdLineCount(inner.joinToString("\n")) >= 2) {
+            return true
+        }
+        return false
+    }
+
+    /** 看起来像 markdown 结构的行数：标题、要点、引用、表格、围栏。 */
+    private fun mdLineCount(text: String): Int = text.split('\n').count { line ->
+        val t = line.trimStart()
+        HEAD_RE.containsMatchIn(t) || t.startsWith("- ") || t.startsWith("* ") || t.startsWith("+ ") ||
+            t.startsWith("> ") || t.startsWith("|") || t.startsWith("```")
+    }
+
+    private fun parseBlocks(md: String): List<Block> {
         val out = ArrayList<Block>()
         val lines = hoistImages(md).split('\n')
         val para = StringBuilder()

@@ -274,7 +274,11 @@ object Recorder {
                 // 名字必须在最终状态发出去之前定下来：界面一收到 inactive 就跳去详情页，
                 // 那之后再改 meta 就晚了，详情页会先显示旧名字。
                 val wanted = title?.trim().orEmpty()
-                n.title = if (wanted.isNotEmpty()) wanted else NoteStore.suggestTitle(n.id)
+                val auto = NoteStore.suggestTitle(n.id)
+                // 框里填的就是自动取的那个名字（用户没改）→ 还算「自动名」：
+                // AI 整理出这节课的题目之后可以换掉它；用户自己敲的名字就一个字都不动
+                n.autoTitle = wanted.isEmpty() || wanted == auto
+                n.title = if (wanted.isNotEmpty()) wanted else auto
                 try {
                     NoteStore.saveMeta(n)
                 } catch (_: Throwable) {
