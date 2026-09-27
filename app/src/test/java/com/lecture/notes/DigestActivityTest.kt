@@ -3,6 +3,7 @@ package com.lecture.notes
 import android.content.Context
 import android.content.Intent
 import android.view.View
+import android.widget.AutoCompleteTextView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
@@ -95,5 +96,24 @@ class DigestActivityTest {
         Prefs.init(app)
         NoteStore.init(app)
         Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+    }
+
+    /**
+     * 设置页「模型名」的下拉，永远列全常用模型。
+     *
+     * 输入框里写着当前模型，默认的 ArrayAdapter 会拿这行字去过滤，点开只剩它自己一条 ——
+     * 下拉就白做了。这里连「过滤完列表还在」一起钉住，别再回到 clear() 抛异常那种写法。
+     */
+    @Test
+    fun visionModelDropdownListsEveryPreset() {
+        val app: Context = ApplicationProvider.getApplicationContext()
+        Prefs.init(app)
+        NoteStore.init(app)
+        val a = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        val field = a.findViewById<AutoCompleteTextView>(R.id.visionModel)
+        val presets = app.resources.getStringArray(R.array.vision_model_presets)
+        assertTrue("预设模型至少要有两个", presets.size >= 2)
+        // 建这个页面时会把当前模型 setText 进去，那会走一遍过滤 —— 列表得原样留着
+        assertEquals("下拉里应该列全所有预设模型", presets.size, field.adapter.count)
     }
 }

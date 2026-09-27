@@ -80,19 +80,24 @@
     <string name="common_cancel">取消</string>
     <string name="common_undo">撤销</string>
 
-    <string name="settings_title">设置</string>
+<string name="settings_title">设置</string>
+<string name="settings_subtitle">改完即时生效，不用点保存</string>
     <string name="settings_source">音频来源</string>
     <string name="settings_source_mic">麦克风</string>
     <string name="settings_source_mic_desc">通用。手机外放时也能收录</string>
     <string name="settings_source_internal">内录系统声音</string>
-    <string name="settings_source_internal_desc">更清晰，Android 10 以上。部分 App 禁止内录，需授权录屏</string>
+<string name="settings_source_internal_desc">更清晰，Android 10 以上。部分 App 禁止内录，需授权录屏</string>
+<string name="toast_internal_projection">内录系统声音要先给一次「录制屏幕」授权 —— 声音走的就是这条通道，画面不会被保存。选「立即开始」即可</string>
     <string name="settings_threads">识别线程数</string>
     <string name="settings_threads_value">%1$d 线程</string>
     <string name="settings_threads_desc">手机强劲可调到 3–4；若发烫或卡顿，调回 2</string>
     <string name="settings_highlight">自动标记重点</string>
     <string name="settings_highlight_desc">听到「重点 / 必考 / 注意」等词时自动标星</string>
-    <string name="settings_keep_screen">记录时保持屏幕常亮</string>
-    <string name="settings_about">关于</string>
+<string name="settings_keep_screen">记录时保持屏幕常亮</string>
+<string name="settings_section_record">录音</string>
+<string name="settings_section_recognize">识别与记录</string>
+<string name="settings_about">关于</string>
+<string name="settings_about_version">版本 %1$s</string>
     <string name="settings_about_text">完全离线运行：不联网、不上传任何音频或文字。\n语音识别引擎：sherpa-onnx 1.13.8（Apache-2.0）\n识别模型：SenseVoice-Small 中文 int8（约 228 MB，随安装包内置）\n分段与静音检测：Silero VAD\n知识点整理：本地算法（免费、秒出）+ 可选大模型\n\n识别结果可能存在误差，请以课程原文为准。</string>
 
     <string name="perm_need_mic">需要录音权限才能把老师的话变成文字</string>
@@ -182,7 +187,9 @@
     <string name="settings_llm_ok">连接正常，模型回复：%1$s</string>
     <string name="settings_llm_fail">连接失败：%1$s</string>
     <string name="settings_llm_hint">留空 = 完全离线</string>
-    <string name="settings_llm_preset">常用服务商</string>
+<string name="settings_llm_preset">常用服务商</string>
+<string name="settings_llm_state_ok">✓ 已配置：%1$s（%2$s）—— 点「AI 整理」时就调用它</string>
+<string name="settings_llm_state_none">⚠ 还没填 API Key —— 不填也能用，只是没有 AI 整理、也不好看图</string>
     <string name="preset_zhipu">智谱 GLM</string>
     <string name="preset_deepseek">DeepSeek</string>
     <string name="preset_kimi">Kimi</string>
@@ -233,12 +240,39 @@
     <string name="settings_shot_recording">截图放进正在记录的那篇笔记</string>
     <string name="settings_shot_recording_desc">关掉的话，截图会单独收进当天的「课堂截图」笔记里。</string>
     <string name="settings_shot_vision">视觉模型</string>
-    <string name="settings_shot_vision_desc">默认 glm-4v-flash：智谱的免费视觉模型，不花钱；并发被限时（429）会自动退避重试。想看得更细可以换 glm-4.6v-flash（也是免费，上下文更大）。</string>
+<string name="settings_shot_vision_desc">默认 glm-4v-flash：智谱的免费视觉模型，不花钱，排队也短。想看得更细可以换 glm-4.6v-flash（同样免费、上下文更大，但高峰期更容易被限流 429）。</string>
+    <string name="settings_vision_state_shared">✓ 用的就是上面「在线整理」里那套接口地址和 Key —— 不用再填一遍</string>
+    <string name="settings_vision_state_own">✓ 用的是下面这套单独配置的接口地址和 Key</string>
+    <string name="settings_vision_state_none">⚠ 还没有 API Key，截图只会存下来、不会自动分析 —— 点这一行去填</string>
+    <string name="settings_vision_extra">看图用的地址和 Key 可以和上面不一样。比如上面用 DeepSeek 整理（它没有看图能力），这里就填智谱那套，配 glm-4v-flash。留空 = 直接复用上面那套。</string>
+<string name="settings_vision_base">接口地址（留空 = 复用上面）</string>
+<string name="settings_vision_key">API Key（留空 = 复用上面）</string>
+    <string name="settings_vision_test">测试看图</string>
+    <string name="settings_vision_test_desc">测试会发一张写着「42」的小图给这个模型（不是你的截图），读对了就说明这条路通了。</string>
+    <string name="settings_vision_testing">正在发一张测试图…</string>
+    <string name="settings_vision_ok">✅ 看图正常：%1$s（它读到了测试图里的 42）</string>
+    <string name="settings_vision_soft">模型有回应，但没读到测试图里的 42。它说的是：%1$s\n\n多半是模型名写错，或者这个模型看图能力一般 —— 换 glm-4.6v-flash / qwen-vl-max 试试。</string>
+<string name="settings_vision_fail">看图失败：%1$s\n\n常见原因：这个服务商没有视觉模型（DeepSeek 只有文本），或者模型名写错了。</string>
+<string name="settings_vision_busy">模型现在太挤了（免费视觉模型高峰期会限流，报错 429）。\n\n等一两分钟再点一次；一直这样就把模型换成 glm-4v-flash，它排队短一些。</string>
+<string name="settings_vision_auth">Key 没被接受：%1$s\n\n检查 Key 有没有复制全、末尾有没有多出空格，以及这家服务商有没有开通这个模型。</string>
+<string name="settings_vision_net">没连上：%1$s\n\n检查手机网络（或代理）后重试。</string>
+    <string name="settings_vision_need_key">先填 API Key 才能测</string>
+    <string name="settings_vision_help">怎么配置？</string>
+    <string name="settings_vision_help_title">看图这条链路怎么配</string>
+    <string name="settings_vision_help_open">去智谱拿 Key</string>
+    <string name="settings_vision_help_body">1. 先在「在线整理」里填一次接口地址 + API Key。最省事的是智谱：open.bigmodel.cn 注册（手机号就行），在「API Keys」里复制一把，glm-4-flash 和 glm-4v-flash 都是免费的。\n\n2. 看图默认复用这套配置，模型名是 glm-4v-flash —— 地址和 Key 都不用再填。\n\n3. 要是整理用的是 DeepSeek 这类只有文本的服务商，就在下面单独填一次接口地址和 Key，两个功能各走各的。\n\n4. 填完点「测试看图」：它会发一张写着 42 的小图过去，模型读对了就是通了。没通的话，报错里会写清是 401（Key 不对）、404（地址不对）还是模型不存在。</string>
+    <string name="shot_need_vision_key">还没配置看图用的 API Key：设置 → 视觉模型，填一个就能用</string>
     <string name="preset_vision_flash">智谱 glm-4v-flash（免费）</string>
     <string name="preset_vision_flash_new">智谱 glm-4.6v-flash（免费）</string>
     <string name="preset_vision_qwen">通义 qwen-vl-max</string>
     <string name="preset_vision_moonshot">Kimi moonshot-v1-8k-vision-preview</string>
-    <string name="settings_shot_preset">常用视觉模型</string>
+<string name="settings_shot_preset">常用视觉模型</string>
+<string-array name="vision_model_presets">
+    <item>glm-4v-flash</item>
+    <item>glm-4.6v-flash</item>
+    <item>qwen-vl-max</item>
+    <item>moonshot-v1-8k-vision-preview</item>
+</string-array>
 
     <!-- 笔记里的截图 -->
     <string name="entry_shot">截图</string>

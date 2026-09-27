@@ -391,7 +391,7 @@ class ShotService : Service() {
                 bubble(getString(R.string.shot_capturing))
 
                 var visionPayload: String? = null
-                if (Prefs.shotAutoAnalyze && LlmDigest.isReady()) {
+                if (Prefs.shotAutoAnalyze && LlmDigest.visionReady()) {
                     visionPayload = try {
                         ImageUtil.visionBase64(bitmap)
                     } catch (t: Throwable) {
@@ -415,7 +415,7 @@ class ShotService : Service() {
 
                 if (Prefs.shotAutoAnalyze) {
                     if (visionPayload == null) {
-                        if (!LlmDigest.isReady()) bubble(getString(R.string.shot_need_key))
+                        if (!LlmDigest.visionReady()) bubble(getString(R.string.shot_need_vision_key))
                     } else {
                         analyze(note.id, atMs, rel, visionPayload, note.title)
                     }

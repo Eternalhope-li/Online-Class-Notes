@@ -230,8 +230,8 @@ class ShotActivity : AppCompatActivity() {
         val n = note ?: return
         val e = entry ?: return
         if (busy) return
-        if (!LlmDigest.isReady()) {
-            toast(getString(R.string.digest_ai_need_key))
+        if (!LlmDigest.visionReady()) {
+            toast(getString(R.string.shot_need_vision_key))
             return
         }
         busy = true

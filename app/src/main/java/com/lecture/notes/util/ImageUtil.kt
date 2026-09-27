@@ -27,6 +27,31 @@ object ImageUtil {
     const val VISION_MAX_EDGE = 1280
     const val VISION_QUALITY = 80
 
+    /**
+     * 「测试看图」用的小图：白底黑字写着 42。
+     *
+     * 比发一张真截图靠谱 —— 图是固定的，模型读没读对一眼就知道，
+     * 也省得把用户的课件传出去只为了试一条 Key。
+     */
+    fun testImageJpeg(): String {
+        val w = 320
+        val h = 180
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.BLACK
+            textSize = 120f
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
+        }
+        canvas.drawText("42", w / 2f, h / 2f + 42f, paint)
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        bmp.recycle()
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }
+
     /** 不把整张图解进内存，先只读尺寸。 */
     fun sizeOf(f: File): Pair<Int, Int>? = try {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }

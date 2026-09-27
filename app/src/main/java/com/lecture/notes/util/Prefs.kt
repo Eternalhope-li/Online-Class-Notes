@@ -2,6 +2,7 @@ package com.lecture.notes.util
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 
 object Prefs {
     const val SOURCE_MIC = "mic"
@@ -20,8 +21,18 @@ object Prefs {
     }
 
     var audioSource: String
-        get() = sp.getString("audio_source", SOURCE_MIC) ?: SOURCE_MIC
+        get() = sp.getString("audio_source", defaultSource()) ?: defaultSource()
         set(v) = sp.edit().putString("audio_source", v).apply()
+
+    /**
+     * 默认内录系统声音。
+     *
+     * 网课的声音本来就是从这台手机里放出来的，内录拿到的是干净的数字音频，
+     * 不用经过房间和麦克风，比外录准得多。Android 10 以下系统拿不到内录通道，
+     * 那里退回麦克风 —— 至少还能录。
+     */
+    private fun defaultSource(): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) SOURCE_INTERNAL else SOURCE_MIC
 
     var numThreads: Int
         get() = sp.getInt("threads", 2).coerceIn(1, 4)
@@ -107,6 +118,19 @@ object Prefs {
     var shotY: Float
         get() = sp.getFloat("shot_y", -1f)
         set(v) = sp.edit().putFloat("shot_y", v).apply()
+
+    /**
+     * 看图用的接口地址 / Key：留空就复用上面「在线整理」那一套。
+     *
+     * 单独留一份是因为有些服务商只有文本模型（比如 DeepSeek），整理用它、看图得换一家。
+     */
+    var visionBase: String
+        get() = sp.getString("vision_base", "") ?: ""
+        set(v) = sp.edit().putString("vision_base", v.trim()).apply()
+
+    var visionKey: String
+        get() = sp.getString("vision_key", "") ?: ""
+        set(v) = sp.edit().putString("vision_key", v.trim()).apply()
 
     /** 图片分析用的视觉模型，可以和整理用的文本模型不一样。 */
     var visionModel: String

@@ -68,10 +68,19 @@ object LlmDigest {
     /** 视觉模型（GLM-4V-Flash 只有 4K 上下文）输出要短一点，不然输入加输出就爆了。 */
     private const val VISION_MAX_TOKENS = 1200
     private const val MAX_HEAL = 3
+    /** 「测试看图」：就当普通看图请求发，只是问题特别简单。 */
+    private const val VISION_TEST_SYS = "你是识图助手，只回答用户问的图上的内容，不要客套。"
+    private const val VISION_TEST_ASK = "这张图中间写着一串数字，把它原样回复给我，不要解释。"
 
     // ------------------------------------------------------------ 对外
 
     fun isReady(): Boolean = Prefs.llmKey.isNotBlank()
+
+    /** 看图用的 Key：单独填过就用单独的，没填就复用整理那套。 */
+    internal fun visionKey(): String = Prefs.visionKey.trim().ifEmpty { Prefs.llmKey.trim() }
+
+    /** 截图能不能叫 AI 看图 —— 只要有一把能用的 Key 就行（哪怕只配了看图那把）。 */
+    fun visionReady(): Boolean = visionKey().isNotEmpty()
 
     /** 取消时用的统一说法，界面据此区分「用户取消」和真的失败。 */
     internal const val CANCELLED = "已取消"
@@ -172,8 +181,8 @@ object LlmDigest {
         // 取消标记是全局的：上一次整理被掐断后必须在这里清零，
         // 否则截图分析会被残留的标记直接判成「已取消」，一张图都分析不出来。
         cancelled = false
-        val key = Prefs.llmKey.trim()
-        if (key.isEmpty()) throw LlmException("还没有填写 API Key")
+        val key = visionKey()
+        if (key.isEmpty()) throw LlmException("还没有填写看图的 API Key")
         if (jpegBase64.isBlank()) throw LlmException("图片是空的")
         val text = buildString {
             append(VISION_PROMPT)
@@ -185,6 +194,32 @@ object LlmDigest {
         }
         clean(call(key, VISION_SYS, text, image = ImageUtil.dataUrl(jpegBase64), vision = true, maxTokens = VISION_MAX_TOKENS))
     }
+
+    /**
+     * 「测试看图」用：发一张固定的小图（白底黑字写着 42），看模型读不读得出来。
+     *
+     * 截图分析这条链路最容易卡在四件事上：没填 Key、地址不对、服务商根本没有视觉模型
+     * （比如 DeepSeek）、模型名写错。这个按钮把它们一次性验掉，不用等上完课才发现图没分析。
+     */
+    suspend fun pingVision(jpegBase64: String): String = withContext(Dispatchers.IO) {
+        cancelled = false
+        val key = visionKey()
+        if (key.isEmpty()) throw LlmException("还没有填写看图的 API Key")
+        clean(
+            call(
+                key,
+                VISION_TEST_SYS,
+                VISION_TEST_ASK,
+                opts = MINIMAL,
+                image = ImageUtil.dataUrl(jpegBase64),
+                vision = true,
+                maxTokens = 200
+            )
+        ).take(120)
+    }
+
+    /** 单测入口：看图请求会走哪几个地址。 */
+    internal fun debugEndpoints(vision: Boolean): List<String> = endpoints(vision)
 
     // ------------------------------------------------------------ 流程
 
@@ -410,7 +445,7 @@ object LlmDigest {
         maxTokens: Int = MAX_TOKENS,
         onDelta: ((String) -> Unit)? = null
     ): String {
-        val urls = endpoints()
+        val urls = endpoints(vision)
         val streaming = onDelta != null && opts.stream
         var last = "请求失败"
         for ((idx, url) in urls.withIndex()) {
@@ -460,8 +495,10 @@ object LlmDigest {
     }
 
     /** 允许用户填：`https://x/v1`、`https://x/v1/chat/completions`、`https://x`、`https://x/api/paas/v4`。 */
-    private fun endpoints(): List<String> {
-        val base = Prefs.llmBase.trim().trimEnd('/')
+    private fun endpoints(vision: Boolean = false): List<String> {
+        // 视觉模型可以单独配一套地址：整理用 DeepSeek（没有看图能力）、看图用智谱，是很常见的组合
+        val raw = if (vision) Prefs.visionBase.trim().ifEmpty { Prefs.llmBase.trim() } else Prefs.llmBase
+        val base = raw.trim().trimEnd('/')
         if (base.isEmpty()) throw LlmException("接口地址是空的")
         if (base.endsWith("/chat/completions")) return listOf(base)
         if (Regex("/v\\d+(\\.\\d+)?$").containsMatchIn(base)) return listOf("$base/chat/completions")
@@ -761,7 +798,13 @@ object LlmDigest {
         7. 按上下文改正明显的同音字错误，把没说完的话补完整，但不要编造。
     """.trimIndent()
 
-    /** 体系化终稿的骨架与要求，短课一次生成、长课合并时都用它。 */
+    /**
+     * 体系化终稿的骨架与要求，短课一次生成、长课合并时都用它。
+     *
+     * 刻意写成「建议结构 + 按内容取舍」，而不是一张必须填满的表格：
+     * 一节没布置作业的课，硬凑出「作业与下节预告」只会让笔记看起来像模板，
+     * 而复习时最没用的就是这种空壳小节。
+     */
     private val SKELETON = """
         你是课程笔记的体系化编辑。下面是一堂网课的内容（语音转写或分段整理出的素材），
         每句带 [mm:ss] 时间戳，中间可能有 [[IMG1]] 这样的截图标记。
@@ -771,7 +814,16 @@ object LlmDigest {
         所以每个知识点都要说清「是什么、为什么、怎么用、什么情况下会错」，
         而不是把老师说过的话压缩一遍。
 
-        直接输出 Markdown，不要任何寒暄、说明或结尾语。严格按下面的骨架和顺序输出：
+        结构要跟着这节课的内容走，不要套模板：
+        - 以例题、讲解为主的课，就按「题目 → 思路 → 步骤 → 结论」组织；
+        - 以概念、原理为主的课，就按「定义 → 为什么 → 适用条件和边界 → 易错点」组织；
+        - 以操作、流程为主的课，就按「准备 → 步骤 → 常见坑」组织；
+        - 小标题写这节课真实讲的东西（「两个容易混的公式」「为什么要先归一化」），
+          不要每篇都用同一批小标题。
+        **没有内容的小节一律不要出现**：这节课没布置作业，就不要有「作业」这一节；
+        没讲公式，就不要术语表；老师没提考点，就不要考点小节。宁可短，不要空壳。
+
+        直接输出 Markdown，不要任何寒暄、说明或结尾语。可以参照下面这个结构，按内容增删：
 
         第一行是一条引用块导语（以 "> " 开头）：一句话说明这节课讲什么、学完能做什么。
 
@@ -789,19 +841,16 @@ object LlmDigest {
         ## 二、大节标题
         （同上；大节数量按内容定，一般 2-6 个，序号用中文数字）
 
-        ## 术语与公式
+        ## 术语与公式        ← 只在真的出现了术语 / 公式时写
         | 术语 / 公式 | 含义 |
         | --- | --- |
         | …… | …… |
 
-        ## 易错点与考点
-        - ……
+        ## 易错点与考点      ← 只在这节课确实讲到时写
 
         ## 一句话总结
-        > ……
 
-        ## 作业与下节预告
-        - ……
+        ## 作业与下节预告    ← 只在老师布置了作业或预告了下节课时写，没有就整节不要
 
         要求：
         1. 层级最多三层（## / ### / -），不要用 ####，也不要自己写 "#" 大标题（标题由 App 添加）；
@@ -809,13 +858,11 @@ object LlmDigest {
         3. 保留原文的时间戳，写成反引号包起来的形式，例如 `[03:12]`，放在对应要点开头或句末；
         4. 正文里出现 [[IMG1]] 这类标记时，把标记**单独放一行**插在它**对应时间戳那句话的下面**，
            原样照抄标记（不要加反引号、不要改写、不要翻译），并把图上的说明融进正文；
-        5. 术语表 2-6 行，只收这节课真正出现过的术语和公式；
-        6. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
-        7. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
-        8. 笔记里只写知识本身，不要出现「这段转写」「视频里」「录音中」这类话；
-        9. **全篇 500-900 字**：这是在写复习用的提纲，不是课堂实录。每个要点一句话说完，
-           不复述老师原话、不写铺垫、不做名词解释的堆砌；内容少就写更短，
-           某项确实没有内容就整节不写，但顺序不要变。
+        5. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
+        6. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
+        7. 笔记里只写知识本身，不要出现「这段转写」「视频里」「录音中」这类话；
+        8. **全篇 500-900 字**：这是在写复习用的提纲，不是课堂实录。每个要点一句话说完，
+           不复述老师原话、不写铺垫、不做名词解释的堆砌；内容少就写更短。
     """.trimIndent()
 
     /** 单段（或素材卡）直接出终稿，用的就是骨架本身。 */

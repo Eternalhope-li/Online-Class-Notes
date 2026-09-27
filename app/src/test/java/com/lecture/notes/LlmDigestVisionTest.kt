@@ -8,6 +8,7 @@ import com.lecture.notes.util.Prefs
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -56,5 +57,47 @@ class LlmDigestVisionTest {
     fun visionOutputLimitFitsSmallContext() {
         val j = JSONObject(LlmDigest.debugBody("sys", "看图", ImageUtil.dataUrl("AAAA")))
         assertTrue(j.getInt("max_tokens") <= 1500)
+    }
+
+    // ------------------------------------------------------ 看图这一套配置怎么解析
+
+    @Test
+    fun visionGoesToItsOwnBase() {
+        Prefs.llmBase = "https://api.deepseek.com/v1"
+        Prefs.visionBase = "https://open.bigmodel.cn/api/paas/v4"
+        assertEquals(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            LlmDigest.debugEndpoints(true).first()
+        )
+        assertEquals(
+            "https://api.deepseek.com/v1/chat/completions",
+            LlmDigest.debugEndpoints(false).first()
+        )
+    }
+
+    @Test
+    fun visionFallsBackToLlmBaseWhenBlank() {
+        Prefs.llmBase = "https://api.deepseek.com/v1"
+        Prefs.visionBase = ""
+        assertEquals(
+            "https://api.deepseek.com/v1/chat/completions",
+            LlmDigest.debugEndpoints(true).first()
+        )
+    }
+
+    /** 只看图那把 Key 也得算配好了 —— 否则「整理用 DeepSeek、看图用智谱」这种组合会被挡在门外。 */
+    @Test
+    fun visionReadyAcceptsEitherKey() {
+        Prefs.llmKey = "text-key"
+        Prefs.visionKey = ""
+        assertTrue(LlmDigest.visionReady())
+
+        Prefs.llmKey = ""
+        Prefs.visionKey = "vision-key"
+        assertTrue(LlmDigest.visionReady())
+
+        Prefs.llmKey = ""
+        Prefs.visionKey = ""
+        assertFalse(LlmDigest.visionReady())
     }
 }

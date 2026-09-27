@@ -134,8 +134,8 @@ class DetailActivity : AppCompatActivity() {
         val n = note ?: return
         val rel = row.image ?: return
         if (analyzingRel != null) return
-        if (!LlmDigest.isReady()) {
-            toast(getString(R.string.digest_ai_need_key))
+        if (!LlmDigest.visionReady()) {
+            toast(getString(R.string.shot_need_vision_key))
             return
         }
         analyzingRel = rel

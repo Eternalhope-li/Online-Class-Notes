@@ -467,6 +467,8 @@ binding.recordingBar.setOnClickListener { openLive() }
                 return
             }
             val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            // 系统那个授权框写的是「截取您的屏幕」，内录却非要它不可，先说一句免得用户以为要录屏
+            toast(getString(R.string.toast_internal_projection))
             projectionLauncher.launch(mgr.createScreenCaptureIntent())
             return
         }
