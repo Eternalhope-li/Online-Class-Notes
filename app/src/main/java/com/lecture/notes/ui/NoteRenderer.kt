@@ -544,6 +544,10 @@ class NoteRenderer(context: Context) {
                     sb.append(s.text)
                     sb.setSpan(StyleSpan(Typeface.BOLD), start, sb.length, SPAN_FLAG)
                 }
+                is Span.Em -> {
+                    sb.append(s.text)
+                    sb.setSpan(StyleSpan(Typeface.ITALIC), start, sb.length, SPAN_FLAG)
+                }
                 is Span.Code -> {
                     sb.append(s.text)
                     sb.setSpan(

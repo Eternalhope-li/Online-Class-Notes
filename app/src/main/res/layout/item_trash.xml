@@ -54,22 +54,43 @@
                 android:textSize="14sp" />
         </LinearLayout>
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/restore"
-            style="?attr/materialButtonOutlinedStyle"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginEnd="10dp"
-            android:clickable="false"
-            android:focusable="false"
-            android:insetBottom="0dp"
-            android:insetTop="0dp"
-            android:minHeight="36dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="14dp"
-            android:text="@string/trash_restore"
-            android:textColor="?attr/colorPrimary"
-            android:textSize="13sp"
-            app:cornerRadius="20dp" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/restore"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:clickable="false"
+                android:focusable="false"
+                android:insetBottom="0dp"
+                android:insetTop="0dp"
+                android:minHeight="36dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="14dp"
+                android:text="@string/trash_restore"
+                android:textColor="?attr/colorPrimary"
+                android:textSize="13sp"
+                app:cornerRadius="20dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/delete"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:insetBottom="0dp"
+                android:insetTop="0dp"
+                android:minHeight="32dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="10dp"
+                android:text="@string/trash_delete"
+                android:textColor="?attr/colorError"
+                android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

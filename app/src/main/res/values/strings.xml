@@ -138,6 +138,10 @@
     <string name="trash_restore_failed">这篇没能恢复，可能已经恢复过了</string>
     <string name="trash_empty_confirm">回收站里的 %1$d 篇会永久删掉，恢复不了。</string>
     <string name="trash_emptied">回收站已清空</string>
+    <string name="trash_delete">彻底删除</string>
+    <string name="trash_delete_title">彻底删除《%1$s》？</string>
+    <string name="trash_delete_confirm">删了就真的找不回来了，回收站里也不再留。</string>
+    <string name="trash_deleted_one">已彻底删除</string>
     <string name="trash_no_preview">（没有识别到内容）</string>
     <string name="select_restored">已恢复 %1$d 篇</string>
     <string name="toast_stop_first">请先停止当前记录</string>

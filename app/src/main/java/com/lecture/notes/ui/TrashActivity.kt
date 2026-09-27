@@ -52,10 +52,34 @@ class TrashActivity : AppCompatActivity() {
             }
         }
 
-        adapter = TrashAdapter { t -> restore(listOf(t)) }
+        adapter = TrashAdapter({ t -> restore(listOf(t)) }, { t -> confirmPurge(t) })
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.list.adapter = adapter
         load()
+    }
+
+    /**
+     * 彻底删掉一篇。
+     *
+     * 「清空回收站」以前是这里唯一能真正删东西的地方，想只扔一篇就得先把别的恢复出来。
+     * 这一步没有退路，所以单独问一句。
+     */
+    private fun confirmPurge(t: NoteStore.Trashed) {
+        if (busy) return
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.trash_delete_title, t.title))
+            .setMessage(R.string.trash_delete_confirm)
+            .setPositiveButton(R.string.trash_delete) { _, _ ->
+                busy = true
+                lifecycleScope.launch {
+                    withContext(Dispatchers.IO) { NoteStore.deleteForever(t.id) }
+                    busy = false
+                    toast(getString(R.string.trash_deleted_one))
+                    load()
+                }
+            }
+            .setNegativeButton(R.string.common_cancel, null)
+            .show()
     }
 
     private fun load() {

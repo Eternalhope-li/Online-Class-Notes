@@ -99,6 +99,16 @@ class MiniMarkdownTest {
     }
 
     @Test
+    fun readsItalicEmphasis() {
+        val spans = MiniMarkdown.inline("_这篇记录还没有足够的内容可以整理。_")
+        assertTrue(spans.any { it is Span.Em && it.text == "这篇记录还没有足够的内容可以整理。" })
+        assertTrue(MiniMarkdown.inline("*旁的备注*").any { it is Span.Em && it.text == "旁的备注" })
+        // 文件名和算式里的记号不能被吃掉
+        assertTrue(MiniMarkdown.inline("看 note_store 这个文件").none { it is Span.Em })
+        assertTrue(MiniMarkdown.inline("3 * 4 * 5").none { it is Span.Em })
+    }
+
+    @Test
     fun htmlIsStyledAndEscaped() {
         val html = MiniMarkdown.toHtml("## 一、A & B\n\n- 用到 `<div>` 标签", "测试")
         assertFalse(html.contains("<table"))

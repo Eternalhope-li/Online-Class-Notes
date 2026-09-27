@@ -11,10 +11,13 @@ import com.lecture.notes.util.Formats
 /**
  * 回收站列表。
  *
- * 一行一篇：标题、「几天前删的」、开头两句，右边一颗「恢复」。整张卡片都能点，点的意思
- * 就是放回去 —— 回收站里不该再有第二个动作。
+ * 一行一篇：标题、「几天前删的」、开头两句，右边「恢复」和一颗小的「彻底删除」。
+ * 整张卡片都能点，点的意思就是放回去；只有「彻底删除」会先问一句再动手。
  */
-class TrashAdapter(private val onRestore: (NoteStore.Trashed) -> Unit) :
+class TrashAdapter(
+    private val onRestore: (NoteStore.Trashed) -> Unit,
+    private val onDelete: (NoteStore.Trashed) -> Unit
+) :
     RecyclerView.Adapter<TrashAdapter.VH>() {
 
     private val items = ArrayList<NoteStore.Trashed>()
@@ -43,5 +46,6 @@ class TrashAdapter(private val onRestore: (NoteStore.Trashed) -> Unit) :
         holder.b.meta.text = parts.joinToString(" · ")
         holder.b.preview.text = t.preview.ifBlank { ctx.getString(R.string.trash_no_preview) }
         holder.b.root.setOnClickListener { onRestore(t) }
+        holder.b.delete.setOnClickListener { onDelete(t) }
     }
 }

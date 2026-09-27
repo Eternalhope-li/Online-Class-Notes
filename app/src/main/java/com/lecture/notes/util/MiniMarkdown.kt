@@ -34,6 +34,8 @@ object MiniMarkdown {
     sealed class Span {
         data class Text(val text: String) : Span()
         data class Bold(val text: String) : Span()
+        /** 单星的 *斜体* 和下划线的 _斜体_，模型偶尔用来写旁注。 */
+        data class Em(val text: String) : Span()
         data class Code(val text: String) : Span()
         data class Time(val text: String) : Span()
         object Star : Span()
@@ -405,6 +407,20 @@ object MiniMarkdown {
                     continue
                 }
             }
+            // 单个 * 或 _ 包的斜体。前后都要求是「边界」，内层不许带空格或第二个记号，
+            // 免得把 snake_case、a * b * c 这种当成排版记号吃掉。
+            if ((c == '*' || c == '_') && isEdge(if (i == 0) null else text[i - 1])) {
+                val end = text.indexOf(c, i + 1)
+                val inner = if (end > i + 1) text.substring(i + 1, end) else ""
+                if (inner.isNotBlank() && !inner.startsWith(" ") && !inner.endsWith(" ") &&
+                    !inner.contains(c) && isEdge(if (end + 1 >= text.length) null else text[end + 1])
+                ) {
+                    flush()
+                    out.add(Span.Em(inner.trim()))
+                    i = end + 1
+                    continue
+                }
+            }
             if (c == '[') {
                 val m = TIME_RE.find(text, i)
                 if (m != null && m.range.first == i) {
@@ -432,6 +448,7 @@ object MiniMarkdown {
         for (s in inline(text)) when (s) {
             is Span.Text -> append(s.text)
             is Span.Bold -> append(s.text)
+            is Span.Em -> append(s.text)
             is Span.Code -> append('`').append(s.text).append('`')
             is Span.Time -> append(s.text)
             Span.Star -> append('★')
@@ -552,10 +569,15 @@ object MiniMarkdown {
         Callout.INFO -> "info"
     }
 
+    /** 强调记号的边界：行首/行尾，或紧挨着的不是字母数字（别吃掉 snake_case）。 */
+    private fun isEdge(ch: Char?): Boolean =
+        ch == null || (!ch.isLetterOrDigit() && ch != '_' && ch != '*')
+
     private fun inlineHtml(text: String): String = buildString {
         for (s in inline(text)) when (s) {
             is Span.Text -> append(esc(s.text))
             is Span.Bold -> append("<strong>").append(esc(s.text)).append("</strong>")
+            is Span.Em -> append("<em>").append(esc(s.text)).append("</em>")
             is Span.Code -> append("<code>").append(esc(s.text)).append("</code>")
             is Span.Time -> append("<span class=\"ts\">").append(esc(s.text)).append("</span>")
             Span.Star -> append("<span class=\"star\">★</span>")
