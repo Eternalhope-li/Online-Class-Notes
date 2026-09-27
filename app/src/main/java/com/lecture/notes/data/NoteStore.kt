@@ -10,6 +10,9 @@ import com.lecture.notes.R
 import com.lecture.notes.util.Formats
 import com.lecture.notes.util.MiniMarkdown
 import com.lecture.notes.util.TitlePicker
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -42,6 +45,13 @@ object NoteStore {
      * 没有这把锁就可能把对方刚写进去的一行盖掉。
      */
     private val lock = Any()
+
+    /**
+     * 「这篇笔记的截图变了」的信号：新增、删掉、AI 把说明写回来都会 +1。
+     * 记录页照着它刷新列表 —— 光看转写状态是看不出有人截了图的。
+     */
+    private val _shotsTick = MutableStateFlow(0L)
+    val shotsTick: StateFlow<Long> = _shotsTick.asStateFlow()
 
     fun init(ctx: Context) {
         root = File(ctx.filesDir, "notes")
@@ -143,6 +153,7 @@ object NoteStore {
             val note = load(id) ?: return null
             note.updatedAt = System.currentTimeMillis()
             saveMeta(note)
+            _shotsTick.value = _shotsTick.value + 1
             return note
         }
     }
@@ -157,6 +168,7 @@ object NoteStore {
             note.updatedAt = System.currentTimeMillis()
             rewriteEntries(id, note.entries)
             saveMeta(note)
+            _shotsTick.value = _shotsTick.value + 1
             return note
         }
     }
@@ -179,6 +191,7 @@ object NoteStore {
             rewriteEntries(id, note.entries)
             saveMeta(note)
             deleteShot(id, rel)
+            _shotsTick.value = _shotsTick.value + 1
             return note
         }
     }

@@ -125,7 +125,7 @@ class CaptureService : Service() {
                 }
             }, handler)
             // 登记进共享池，悬浮截图可以直接拿去抓帧
-            projection?.let { ShotGate.publish(it, ShotGate.OWNER_RECORD) }
+            projection?.let { ShotGate.publish(this, it, ShotGate.OWNER_RECORD) }
         }
 
         acquireWakeLock()

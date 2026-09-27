@@ -95,6 +95,16 @@ object Prefs {
         get() = sp.getBoolean("shot_by_session", false)
         set(v) = sp.edit().putBoolean("shot_by_session", v).apply()
 
+    /**
+     * 已经问过「要不要开悬浮窗权限」了。
+     *
+     * 只问一次：用户说过「这次不用」就别每次开记录再拦一次。真想开的时候，
+     * 设置页里的「悬浮截图」开关随时可以开。
+     */
+    var overlayAsked: Boolean
+        get() = sp.getBoolean("overlay_asked", false)
+        set(v) = sp.edit().putBoolean("overlay_asked", v).apply()
+
     /** 首页列表「只看未整理」的开关，关掉 App 再打开还保持。 */
     var onlyUndigested: Boolean
         get() = sp.getBoolean("only_undigested", false)

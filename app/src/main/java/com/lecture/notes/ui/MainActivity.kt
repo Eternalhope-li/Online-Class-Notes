@@ -8,7 +8,6 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import android.provider.Settings
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +29,7 @@ import com.lecture.notes.core.DigestJob
 import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.databinding.ActivityMainBinding
 import com.lecture.notes.util.Formats
+import com.lecture.notes.util.OverlayPerm
 import com.lecture.notes.util.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -190,6 +190,8 @@ binding.recordingBar.setOnClickListener { openLive() }
     override fun onResume() {
         super.onResume()
         refresh()
+        // 刚从系统设置里给完悬浮窗权限回来：把挂在半路的事（挂圆钮）接着做完
+        OverlayPerm.resume(this)
         // 详情页里删掉的那篇，提示得由活着的页面来弹
         if (pendingUndoIds.isNotEmpty()) {
             val ids = pendingUndoIds
@@ -474,14 +476,17 @@ binding.recordingBar.setOnClickListener { openLive() }
         }
         // 纯麦克风录音本身不需要录屏授权，但截屏必须要。既然「开始记录就该有截图按钮」，
         // 就把这一次授权并进「开始记录」这一步：用户拒绝也不影响录音，只是少一个圆钮。
-        if (Prefs.autoShot && !ShotGate.isReady() && Settings.canDrawOverlays(this) &&
+        if (Prefs.autoShot && !ShotGate.isReady() && OverlayPerm.granted(this) &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
         ) {
+            toast(getString(R.string.toast_projection_scope))
             val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             shotLauncher.launch(mgr.createScreenCaptureIntent())
             return
         }
         CaptureService.start(this, source)
+        // 还差悬浮窗权限就在这一步问，录音照常开始，不因为圆钮被拦下
+        attachShotBall()
         openLive()
         toast(getString(R.string.toast_started))
     }
@@ -495,12 +500,12 @@ binding.recordingBar.setOnClickListener { openLive() }
      *
      * 用户要的是「开了记录就有截图按钮」，而不是再去设置里单独开一次。录屏授权本来就
      * 只会在开启记录时申请一次（内录要用），截图直接用同一个，所以这里不会再弹授权框。
-     * 用的是纯麦克风、或者还没给悬浮窗权限，就安静跳过 —— 记录页里那颗「课件截图」
-     * 按钮照样能截。
+     * 用的是纯麦克风、或者还没给悬浮窗权限，就安静跳过 —— 少一个圆钮不影响录音。
+     * 权限这事交给记录页去问：这里一按开始记录就跳到记录页，对话框会被盖住看不见。
      */
     private fun attachShotBall() {
         if (!Prefs.autoShot) return
-        if (!Settings.canDrawOverlays(this)) return
+        if (!OverlayPerm.granted(this)) return
         lifecycleScope.launch {
             // 内录的 MediaProjection 是服务起来之后才登记的，等它登记好再挂圆钮
             var waited = 0
@@ -508,7 +513,11 @@ binding.recordingBar.setOnClickListener { openLive() }
                 delay(100)
                 waited += 100
             }
-            if (ShotGate.isReady()) ShotService.start(this@MainActivity, bySession = true)
+            if (ShotGate.isReady()) {
+                ShotService.start(this@MainActivity, bySession = true)
+                // 服务可能早就跑着了（只是当时没权限挂圆钮），这时补一个
+                ShotService.showBall(this@MainActivity)
+            }
         }
     }
 

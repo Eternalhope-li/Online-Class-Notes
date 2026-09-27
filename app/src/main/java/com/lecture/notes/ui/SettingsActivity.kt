@@ -382,6 +382,7 @@ class SettingsActivity : AppCompatActivity() {
             toast(getString(R.string.settings_shot_on))
             return
         }
+        toast(getString(R.string.toast_projection_scope))
         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(mgr.createScreenCaptureIntent())
     }

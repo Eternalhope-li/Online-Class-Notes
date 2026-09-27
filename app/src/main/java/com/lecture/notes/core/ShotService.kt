@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -14,7 +15,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -32,6 +32,7 @@ import com.lecture.notes.databinding.ViewShotBallBinding
 import com.lecture.notes.databinding.ViewShotBubbleBinding
 import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.util.ImageUtil
+import com.lecture.notes.util.OverlayPerm
 import com.lecture.notes.util.Prefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +66,9 @@ class ShotService : Service() {
     private var capturing = false
     private var waitRetries = 0
 
+    /** 「还没配置看图 Key」这句话只说一次，别每张截图都嚷一遍。 */
+    private var visionKeyNoticed = false
+
     /** 一次只送一张图给视觉模型：连拍时排队，别把免费额度和手机内存一起打爆。 */
     private val analyzeLock = Mutex()
 
@@ -80,6 +84,12 @@ class ShotService : Service() {
 
             ACTION_CAPTURE -> {
                 if (started) capture()
+                return START_NOT_STICKY
+            }
+
+            ACTION_BALL -> {
+                // 用户刚在系统设置里开了悬浮窗权限：把圆钮补挂出来，服务不用重启
+                if (started) attachBall()
                 return START_NOT_STICKY
             }
 
@@ -154,7 +164,7 @@ class ShotService : Service() {
             handler.postDelayed({ stopEverything() }, 1200)
             return
         }
-        ShotGate.publish(p, ShotGate.OWNER_SHOT)
+        ShotGate.publish(this, p, ShotGate.OWNER_SHOT)
         p.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 // 用户在系统的录屏状态条上点了「停止」
@@ -163,12 +173,20 @@ class ShotService : Service() {
             }
         }, handler)
 
-        if (!Settings.canDrawOverlays(this)) {
-            bubble(getString(R.string.shot_need_overlay))
-            handler.postDelayed({ stopEverything() }, 1500)
+        // 没有「显示在其他应用上层」权限：圆钮挂不出来，但服务照常活着 —— 通知里的「截图」
+        // 和记录页那颗按钮都还能用。界面那边会问用户要不要去开权限，开完再让我们把圆钮补上
+        // （见 attachBall）。以前这里是直接停服务，于是没权限的人点几次截图，连记录页那颗按钮
+        // 也一起失灵了。
+        attachBall()
+    }
+
+    /** 挂出圆钮；没有悬浮窗权限就只留通知（服务照常跑，截图照样能用）。 */
+    private fun attachBall() {
+        if (!OverlayPerm.granted(this)) {
+            notifyState()
             return
         }
-        showOverlays()
+        if (ballView == null) showOverlays()
         Prefs.shotFloat = true
         notifyState()
     }
@@ -191,6 +209,15 @@ class ShotService : Service() {
         stopSelf()
     }
 
+    /**
+     * 转屏、展开折叠屏、切分辨率之后，圆钮可能落到屏幕外 —— 存下来的坐标是上一块屏幕的。
+     * 按新屏幕收一次边。
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        ballParams?.let { refit(it) }
+    }
+
     // ------------------------------------------------------------ 悬浮窗
 
     private fun showOverlays() {
@@ -210,8 +237,17 @@ class ShotService : Service() {
             gravity = Gravity.TOP or Gravity.START
             val sx = Prefs.shotX
             val sy = Prefs.shotY
-            x = if (sx < 0) dm.widthPixels - dp(70) else sx.toInt()
-            y = if (sy < 0) (dm.heightPixels * 0.35f).toInt() else sy.toInt()
+            // 存下来的位置可能来自别的屏幕（横屏用过、换过设备、平板），先按当前屏幕粗修一次
+            x = if (sx < 0) {
+                dm.widthPixels - dp(70)
+            } else {
+                sx.toInt().coerceIn(0, (dm.widthPixels - dp(70)).coerceAtLeast(0))
+            }
+            y = if (sy < 0) {
+                (dm.heightPixels * 0.35f).toInt()
+            } else {
+                sy.toInt().coerceIn(0, (dm.heightPixels - dp(120)).coerceAtLeast(0))
+            }
         }
         ballParams = params
 
@@ -222,6 +258,8 @@ class ShotService : Service() {
 
         w.addView(binding.root, params)
         ballView = binding.root
+        // 量出真实大小之后再精确收一次边：不管圆钮多大、屏幕什么比例，都不会跑到屏幕外
+        binding.root.post { refit(params) }
         applyHidden()
 
         val bubble = ViewShotBubbleBinding.inflate(LayoutInflater.from(this))
@@ -317,6 +355,22 @@ class ShotService : Service() {
         p.y = p.y.coerceIn(0, (dm.heightPixels - dp(120)).coerceAtLeast(0))
     }
 
+    /** 按当前屏幕把圆钮收回可视范围，并记住位置（挂出来、转屏、换屏都走这一套）。 */
+    private fun refit(p: WindowManager.LayoutParams) {
+        val v = ballView ?: return
+        val dm = resources.displayMetrics
+        val vw = if (v.width > 0) v.width else dp(66)
+        val vh = if (v.height > 0) v.height else dp(98)
+        p.x = p.x.coerceIn(0, (dm.widthPixels - vw).coerceAtLeast(0))
+        p.y = p.y.coerceIn(0, (dm.heightPixels - vh).coerceAtLeast(0))
+        try {
+            wm?.updateViewLayout(v, p)
+        } catch (_: Throwable) {
+        }
+        Prefs.shotX = p.x.toFloat()
+        Prefs.shotY = p.y.toFloat()
+    }
+
     /** 松手后贴边，并记住位置。 */
     private fun snap(p: WindowManager.LayoutParams) {
         val dm = resources.displayMetrics
@@ -331,9 +385,14 @@ class ShotService : Service() {
         Prefs.shotY = p.y.toFloat()
     }
 
+    /**
+     * 冒一句话给用户看（2.2 秒）。
+     *
+     * 自家页面在前台时也照冒：记录页那颗「课件截图」点完，用户得知道是「存进去了」还是
+     * 「这张没截到」—— 以前这里直接 return，连着点几张都是无声的。气泡是 NOT_TOUCHABLE 的，
+     * 飘在上面不吃点击。
+     */
     private fun bubble(text: String) {
-        // 圆钮自己在躲着的时候（用户就在我们自己的页面上）别再冒气泡
-        if (hidden) return
         handler.post {
             val v = bubbleView ?: return@post
             (v as? android.widget.TextView)?.text = text
@@ -356,12 +415,17 @@ class ShotService : Service() {
         }
     }
 
-    /** 抓图的那一瞬间把自己藏起来，否则圆钮和气泡会被一起截进画面。 */
-    private fun setOverlayVisible(visible: Boolean) {
+    /**
+     * 抓图的那一瞬间把自己藏起来，否则圆钮和气泡会被一起截进画面。
+     * 返回这次是否真的藏了东西 —— 藏过就得等一帧新的，不能把圆钮自己截进去。
+     */
+    private fun setOverlayVisible(visible: Boolean): Boolean {
+        val hid = !visible && ballView?.visibility == View.VISIBLE
         handler.post {
             ballView?.visibility = if (visible && !hidden) View.VISIBLE else View.INVISIBLE
             if (!visible) bubbleView?.visibility = View.GONE
         }
+        return hid
     }
 
     private val hideBubble = Runnable {
@@ -373,11 +437,12 @@ class ShotService : Service() {
     private fun capture() {
         if (capturing) return
         capturing = true
-        setOverlayVisible(false)
+        val hid = setOverlayVisible(false)
         handler.postDelayed({
             scope.launch {
                 val bitmap = try {
-                    ShotGate.grab(this@ShotService)
+                    // 圆钮刚藏起来：等系统重新合成一帧再抓，否则那一帧里还留着圆钮
+                    ShotGate.grab(if (hid) FRESH_AFTER_HIDE_MS else 0L)
                 } catch (t: Throwable) {
                     Log.w(TAG, "grab", t)
                     null
@@ -388,8 +453,8 @@ class ShotService : Service() {
                     bubble(getString(R.string.shot_failed))
                     return@launch
                 }
-                bubble(getString(R.string.shot_capturing))
-
+                // 截图是「点一下就有」的动作，画面上不再闪「正在截图…」：只留最后那句
+                // 「已存入《…》」，中间的分析全在后台默默跑
                 var visionPayload: String? = null
                 if (Prefs.shotAutoAnalyze && LlmDigest.visionReady()) {
                     visionPayload = try {
@@ -415,7 +480,11 @@ class ShotService : Service() {
 
                 if (Prefs.shotAutoAnalyze) {
                     if (visionPayload == null) {
-                        if (!LlmDigest.visionReady()) bubble(getString(R.string.shot_need_vision_key))
+                        // 没配 Key 说一次就够，别每张图都嚷一遍
+                        if (!LlmDigest.visionReady() && !visionKeyNoticed) {
+                            visionKeyNoticed = true
+                            bubble(getString(R.string.shot_need_vision_key))
+                        }
                     } else {
                         analyze(note.id, atMs, rel, visionPayload, note.title)
                     }
@@ -428,18 +497,15 @@ class ShotService : Service() {
      * 把一张截图交给视觉模型看懂。
      *
      * 串行执行：一下连拍五六张时，并发打出去的请求会互相挤免费额度（429），
-     * 同时好几份 base64 摆在内存里对手机也不友好。排队等的时候界面上说一句，
-     * 别让人以为点了没反应。
+     * 同时好几份 base64 摆在内存里对手机也不友好 —— 但排队这件事本身不必打扰用户：
+     * 界面上不冒「正在看图 / 排队中」，结果直接写进笔记，只有真出错才说一句。
      */
     private suspend fun analyze(id: String, atMs: Long, rel: String, base64: String, title: String) {
-        if (analyzeLock.isLocked) bubble(getString(R.string.shot_analyze_queue))
         analyzeLock.withLock {
-            bubble(getString(R.string.shot_analyzing))
             try {
                 val caption = LlmDigest.analyzeImage(base64, title)
                 if (caption.isBlank()) throw LlmDigest.LlmException("模型没有返回内容")
                 NoteStore.setImageCaption(id, atMs, rel, caption, true)
-                bubble(getString(R.string.shot_analyzed))
             } catch (t: Throwable) {
                 NoteStore.setImageCaption(id, atMs, rel, "", false)
                 bubble(getString(R.string.shot_analyze_failed, t.message ?: t.javaClass.simpleName))
@@ -512,6 +578,8 @@ class ShotService : Service() {
         const val ACTION_START = "com.lecture.notes.SHOT_START"
         const val ACTION_STOP = "com.lecture.notes.SHOT_STOP"
         const val ACTION_CAPTURE = "com.lecture.notes.SHOT_CAPTURE"
+        /** 刚拿到悬浮窗权限，把圆钮补挂出来。 */
+        const val ACTION_BALL = "com.lecture.notes.SHOT_BALL"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_REUSE_PROJECTION = "reuse_projection"
@@ -520,6 +588,8 @@ class ShotService : Service() {
 
         /** 藏起自己之后等一小会儿再抓，给系统留出重新合成的两帧。 */
         private const val HIDE_BEFORE_GRAB_MS = 140L
+        /** 藏过圆钮时最多再等这么久去拿一帧新的（画面静止就用手里那张兜底）。 */
+        private const val FRESH_AFTER_HIDE_MS = 700L
         /** 自家页面在前台时圆钮躲着（见 [setHidden]）。 */
         @Volatile
         private var hidden = false
@@ -563,6 +633,17 @@ class ShotService : Service() {
         /** 让正在跑的悬浮按钮立刻截一张（记录页那颗「课件截图」走的就是这条）。 */
         fun capture(ctx: Context) {
             ctx.startService(Intent(ctx, ShotService::class.java).setAction(ACTION_CAPTURE))
+        }
+
+        /**
+         * 把圆钮补挂出来：刚在系统设置里开了悬浮窗权限时走这条。
+         * 服务没在跑就什么都不做，免得凭空拉起一个没有授权的前台服务。
+         */
+        fun showBall(ctx: Context) {
+            try {
+                ctx.startService(Intent(ctx, ShotService::class.java).setAction(ACTION_BALL))
+            } catch (_: Throwable) {
+            }
         }
     }
 }

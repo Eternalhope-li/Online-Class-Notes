@@ -19,7 +19,6 @@
     <string name="main_empty_filtered">这一批都整理完了\n切回「显示全部」能看到全部笔记</string>
     <string name="main_notes_hit">搜索到 %1$d 篇</string>
     <string name="main_digested">已整理</string>
-    <string name="shot_analyze_queue">排队分析课件截图…</string>
     <string name="detail_digest_view">看整理稿</string>
     <string name="main_start">开始记录</string>
     <string name="main_fab_recording">记录中 %1$s</string>
@@ -87,7 +86,8 @@
     <string name="settings_source_mic_desc">通用。手机外放时也能收录</string>
     <string name="settings_source_internal">内录系统声音</string>
 <string name="settings_source_internal_desc">更清晰，Android 10 以上。部分 App 禁止内录，需授权录屏</string>
-<string name="toast_internal_projection">内录系统声音要先给一次「录制屏幕」授权 —— 声音走的就是这条通道，画面不会被保存。选「立即开始」即可</string>
+<string name="toast_internal_projection">内录声音走的就是「录制屏幕」这条通道，画面不会保存。范围选「整个屏幕」最省事，或挑正在播放的那个 App</string>
+    <string name="toast_projection_scope">范围选「单个应用」就挑网课那个 App，别挑成「网课笔记」自己；不想挑就选「整个屏幕」，哪个界面都截得到</string>
     <string name="settings_threads">识别线程数</string>
     <string name="settings_threads_value">%1$d 线程</string>
     <string name="settings_threads_desc">手机强劲可调到 3–4；若发烫或卡顿，调回 2</string>
@@ -133,7 +133,7 @@
     <string name="note_default_title">网课笔记 %1$s</string>
     <string name="common_save">保存</string>
     <string name="detail_saved">已保存</string>
-    <string name="live_internal_silent">选了内录但一直没听到声音？这个 App 可能禁止被录制，去「设置」改回麦克风</string>
+    <string name="live_internal_silent">选了内录却一直没声音？多半是授权时挑错了 App（比如挑成了「网课笔记」自己，或者挑的那个 App 根本没在出声）。停掉重开一次，重新选一次范围就好</string>
     <string name="detail_digest">整理成知识点笔记</string>
 
     <string name="digest_title">知识点笔记</string>
@@ -220,8 +220,7 @@
     <string name="shot_notif_stop">关闭</string>
     <string name="shot_capturing">正在截图…</string>
     <string name="shot_saved">已存入《%1$s》</string>
-    <string name="shot_failed">截图失败，确认一下屏幕是亮着的</string>
-    <string name="shot_analyzing">AI 正在看图…</string>
+    <string name="shot_failed">这张没截到，再点一次试试</string>
     <string name="shot_analyzed">图片已分析，要点写进笔记了</string>
     <string name="shot_analyze_failed">图片已保存，但 AI 分析失败：%1$s</string>
     <string name="shot_need_key">图片已保存。想自动分析，先在设置里填 API Key</string>
@@ -229,7 +228,7 @@
     <string name="shot_projection_lost">屏幕截图授权已结束，悬浮按钮已关闭</string>
 
     <string name="settings_shot">悬浮截图</string>
-    <string name="settings_shot_desc">开启后屏幕上会出现一个能随便拖动的圆钮，点一下就把当前画面截下来放进笔记 —— 看网课视频、直播、PDF 的时候特别顺手。需要先给「录制屏幕」授权，权限只用来截图，不会外传。</string>
+    <string name="settings_shot_desc">开启后屏幕上会出现一个能随便拖动的圆钮，点一下就把当前画面截下来放进笔记 —— 看网课视频、直播、PDF 的时候特别顺手。第一次开要过一遍系统的「录制屏幕」授权，里面的「共享或录制的范围」两种选法都对：想只截网课视频那一块、没有状态栏，就选「单个应用」再挑上网课的那个 App（那样它得摆在屏幕上，切走了截不到）；嫌麻烦就选「整个屏幕」，什么时候都截得到。别挑成「网课笔记」自己。权限只用来截图，不会外传。</string>
     <string name="settings_shot_switch">开启悬浮截图按钮</string>
     <string name="settings_shot_on">悬浮截图正在运行，点屏幕上的圆钮截图</string>
     <string name="settings_shot_off">已关闭悬浮截图</string>
@@ -295,4 +294,8 @@
     <string name="shot_copied">说明已复制</string>
     <string name="shot_missing">图片找不到了</string>
     <string name="digest_shots">本课图示</string>
+    <string name="overlay_ask_title">开一下截图圆钮？</string>
+    <string name="overlay_ask_msg">截图圆钮要浮在网课画面上，需要「显示在其他应用上层」权限。\n\n点「去开启」会跳到系统设置，打开这个开关再按返回，圆钮就会挂出来 —— 以后记录一开始它就在，不用再单独开。</string>
+    <string name="overlay_ask_go">去开启</string>
+    <string name="overlay_ask_later">这次不用</string>
 </resources>

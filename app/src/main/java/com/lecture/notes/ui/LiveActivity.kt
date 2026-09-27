@@ -23,7 +23,9 @@ import com.lecture.notes.core.ShotService
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ActivityLiveBinding
 import com.lecture.notes.util.Formats
+import com.lecture.notes.util.OverlayPerm
 import com.lecture.notes.util.Prefs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -35,16 +37,35 @@ class LiveActivity : AppCompatActivity() {
     private var navigated = false
     private var wasActive = false
 
+    /** 列表里已经画出来的转写行数（截图行另算）。 */
+    private var linesInList = 0
+
+    /** 已经画进列表的那一份截图；换了对象才需要整表重建。 */
+    private var listedShots: List<Row>? = null
+
+    /** 截图读盘的缓存：笔记 id + 截图版本号都没变就不必再读一遍盘。 */
+    private var shotsNoteId: String? = null
+    private var shotsTickSeen = -1L
+    private var shotsCache: List<Row> = emptyList()
+
+    /** 正在手动分析的那张图（相对路径）。 */
+    private var analyzingShot: String? = null
+
+    /** 这次要录屏授权是为了「顺手截一张」还是「只为挂圆钮」。 */
+    private var wantCapture = false
+
     /** 记录页的截图：还没有录屏授权时先要一次，拿到之后圆钮也会一起挂出来。 */
     private val projectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
                 ShotService.start(this, result.resultCode, data, bySession = true)
-                binding.btnShot.postDelayed({ ShotService.capture(this) }, 400)
+                // 用户点的是「课件截图」时才顺手截这一张；只是为挂圆钮要的授权不截
+                if (wantCapture) binding.btnShot.postDelayed({ ShotService.capture(this) }, 400)
             } else {
                 toast(getString(R.string.toast_projection_denied))
             }
+            wantCapture = false
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -67,6 +88,11 @@ class LiveActivity : AppCompatActivity() {
         }
 
         adapter = LinesAdapter().apply { textSizeSp = 16f * Prefs.fontScale }
+        // 截图点开看大图；还没说明的那张，就地也能点「AI 分析这张图」
+        adapter.onImageClick = { row ->
+            Recorder.state.value.noteId?.let { ShotRowActions.open(this, it, row) }
+        }
+        adapter.onAnalyze = { row -> analyzeShot(row) }
         binding.lines.layoutManager = LinearLayoutManager(this)
         binding.lines.adapter = adapter
         binding.lines.addOnScrollListener(object : RecyclerView.OnScrollListener() {
@@ -93,6 +119,51 @@ class LiveActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 刚从系统设置里给完悬浮窗权限回来：把挂在半路的事（挂圆钮 / 截这一张）接着做完
+        OverlayPerm.resume(this)
+        askBallPerm()
+    }
+
+    /**
+     * 记录页问一次「要不要开截图圆钮」。
+     *
+     * 没有「显示在其他应用上层」权限就挂不出圆钮，而这里才是用户看得见对话框的地方
+     * （首页一按开始记录就跳过来了，在那儿问会被这一页盖住）。只问一次：
+     * 用户说过「这次不用」就不再打扰，想开的时候设置页里的开关随时能开。
+     */
+    private fun askBallPerm() {
+        if (Prefs.overlayAsked) return
+        if (!Prefs.autoShot) return
+        if (OverlayPerm.granted(this)) return
+        Prefs.overlayAsked = true
+        OverlayPerm.ensure(this) { attachBall() }
+    }
+
+    /** 权限到手之后把圆钮挂出来（内录的授权可能刚登记好，等一下）。 */
+    private fun attachBall() {
+        lifecycleScope.launch {
+            var waited = 0
+            while (!ShotGate.isReady() && waited < 2000) {
+                delay(100)
+                waited += 100
+            }
+            if (ShotGate.isReady()) {
+                ShotService.start(this@LiveActivity)
+                ShotService.showBall(this@LiveActivity)
+                return@launch
+            }
+            // 用麦克风录的时候圆钮得靠自己那份录屏授权，这里补要一次（只要授权，不顺手截图）
+            if (Prefs.audioSource == Prefs.SOURCE_MIC) {
+                wantCapture = false
+                toast(getString(R.string.toast_projection_scope))
+                val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                projectionLauncher.launch(mgr.createScreenCaptureIntent())
+            }
+        }
+    }
+
     /**
      * 记录页的「课件截图」。
      *
@@ -101,8 +172,15 @@ class LiveActivity : AppCompatActivity() {
      * 所以那种情况只提示、不弹框，免得把正在录的声音掐断。
      */
     private fun shot() {
+        if (!OverlayPerm.granted(this)) {
+            // 圆钮要「显示在其他应用上层」：先解释一句、跳去开，回来再接着截这一张
+            OverlayPerm.ensure(this) { shot() }
+            return
+        }
         if (ShotGate.isReady()) {
             ShotService.start(this)
+            // 权限是刚给的话，服务在跑但还没有圆钮，这时补一个
+            ShotService.showBall(this)
             ShotService.capture(this)
             toast(getString(R.string.shot_capturing))
             return
@@ -111,7 +189,9 @@ class LiveActivity : AppCompatActivity() {
             toast(getString(R.string.live_shot_need_grant))
             return
         }
+        toast(getString(R.string.toast_projection_scope))
         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        wantCapture = true
         projectionLauncher.launch(mgr.createScreenCaptureIntent())
     }
 
@@ -170,15 +250,7 @@ class LiveActivity : AppCompatActivity() {
             getString(R.string.live_pause)
         }
 
-        if (st.lineCount < adapter.itemCount) adapter.clear()
-        if (st.lineCount > adapter.itemCount) {
-            val from = adapter.itemCount
-            val rows = st.lines.subList(from, minOf(st.lineCount, st.lines.size)).map {
-                Row(it.atMs, it.text, it.star, it.manual)
-            }
-            adapter.appendAll(rows)
-            if (autoScroll) binding.lines.scrollToPosition(adapter.itemCount - 1)
-        }
+        syncList(st)
 
         if (st.active) wasActive = true
         if (wasActive && !st.active && !navigated) {
@@ -191,6 +263,89 @@ class LiveActivity : AppCompatActivity() {
             }
             finish()
         }
+    }
+
+    /**
+     * 列表 = 转写行 + 本课截图行，按时间戳混排。
+     *
+     * 截图走整表重建（一节课也就几张，不心疼），转写走末尾追加 —— 新句子永远比已经画出来的
+     * 东西新，接在后面就对；只有「来了张图 / 说明写回来了 / 列表被清过」才整表重建。
+     */
+    private fun syncList(st: Recorder.State) {
+        val shots = shotsOf(st)
+        if (shots !== listedShots || st.lineCount < linesInList) {
+            listedShots = shots
+            linesInList = st.lineCount
+            adapter.submitRows(mergeRecordRows(rowsOf(st), shots))
+            scrollToEnd()
+            return
+        }
+        if (st.lineCount > linesInList) {
+            val from = linesInList
+            val fresh = st.lines.subList(from, minOf(st.lineCount, st.lines.size)).map { lineRow(it) }
+            linesInList = st.lineCount
+            adapter.appendAll(fresh)
+            scrollToEnd()
+        }
+    }
+
+    private fun scrollToEnd() {
+        if (autoScroll && adapter.itemCount > 0) {
+            binding.lines.scrollToPosition(adapter.itemCount - 1)
+        }
+    }
+
+    private fun lineRow(l: Recorder.Line) = Row(l.atMs, l.text, l.star, l.manual)
+
+    private fun rowsOf(st: Recorder.State): List<Row> =
+        st.lines.take(minOf(st.lineCount, st.lines.size)).map { lineRow(it) }
+
+    /** 本课的截图行；只有截图版本号变了、或者换了笔记，才去读盘。 */
+    private fun shotsOf(st: Recorder.State): List<Row> {
+        val id = st.noteId ?: return emptyList()
+        val tick = NoteStore.shotsTick.value
+        if (id != shotsNoteId || tick != shotsTickSeen) {
+            shotsNoteId = id
+            shotsTickSeen = tick
+            shotsCache = readShots(id)
+        }
+        return shotsCache
+    }
+
+    private fun readShots(id: String): List<Row> {
+        val note = NoteStore.load(id) ?: return emptyList()
+        return note.entries.filter { it.isImage }.map { e ->
+            Row(
+                atMs = e.atMs,
+                text = "",
+                star = e.star,
+                image = e.image,
+                caption = e.caption,
+                analyzed = e.analyzed,
+                imageFile = e.image?.let { NoteStore.shotFile(id, it) },
+                analyzing = e.image != null && e.image == analyzingShot
+            )
+        }
+    }
+
+    /** 记录页自己发起的「AI 分析这张图」：跑完让列表重画一次。 */
+    private fun analyzeShot(row: Row) {
+        val st = Recorder.state.value
+        val id = st.noteId ?: return
+        val rel = row.image ?: return
+        if (analyzingShot != null) return
+        analyzingShot = rel
+        refreshShots()
+        ShotRowActions.analyze(this, id, st.title, row) {
+            analyzingShot = null
+            refreshShots()
+        }
+    }
+
+    /** 截图那边有动静（自己分析的、后台分析完写回来的）就重读一次再重画。 */
+    private fun refreshShots() {
+        shotsTickSeen = -1L
+        syncList(Recorder.state.value)
     }
 
     private fun cycleFont() {

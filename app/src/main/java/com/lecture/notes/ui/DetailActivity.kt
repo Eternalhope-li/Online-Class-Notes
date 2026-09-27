@@ -18,9 +18,7 @@ import com.lecture.notes.data.Entry
 import com.lecture.notes.data.Note
 import com.lecture.notes.data.NoteStore
 import com.lecture.notes.databinding.ActivityDetailBinding
-import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.util.Formats
-import com.lecture.notes.util.ImageUtil
 import com.lecture.notes.util.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -129,39 +127,18 @@ class DetailActivity : AppCompatActivity() {
         )
     }
 
-    /** 行内的「AI 分析这张图」：分析完直接刷新这一行。 */
+    /** 行内的「AI 分析这张图」：动作本身和记录页共用一份，这里只管把界面刷新回来。 */
     private fun analyzeRow(row: Row) {
         val n = note ?: return
-        val rel = row.image ?: return
         if (analyzingRel != null) return
-        if (!LlmDigest.visionReady()) {
-            toast(getString(R.string.shot_need_vision_key))
-            return
-        }
-        analyzingRel = rel
+        analyzingRel = row.image
         render()
-        lifecycleScope.launch {
-            var err: String? = null
-            withContext(Dispatchers.IO) {
-                try {
-                    val b64 = ImageUtil.visionBase64(NoteStore.shotFile(n.id, rel))
-                        ?: throw IllegalStateException(getString(R.string.shot_missing))
-                    val caption = LlmDigest.analyzeImage(b64, n.title)
-                    if (caption.isBlank()) throw IllegalStateException("模型没有返回内容")
-                    NoteStore.setImageCaption(n.id, row.atMs, rel, caption, true)
-                } catch (t: Throwable) {
-                    err = t.message ?: t.javaClass.simpleName
-                    NoteStore.setImageCaption(n.id, row.atMs, rel, row.caption, row.analyzed)
-                }
-            }
+        ShotRowActions.analyze(this, n.id, n.title, row) {
             analyzingRel = null
-            val fresh = withContext(Dispatchers.IO) { NoteStore.load(n.id) }
-            if (fresh != null) note = fresh
-            render()
-            if (err == null) {
-                toast(getString(R.string.shot_analyzed))
-            } else {
-                toast(getString(R.string.shot_analyze_failed, err!!))
+            lifecycleScope.launch {
+                val fresh = withContext(Dispatchers.IO) { NoteStore.load(n.id) }
+                if (fresh != null) note = fresh
+                render()
             }
         }
     }
