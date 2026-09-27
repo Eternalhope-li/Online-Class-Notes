@@ -620,7 +620,7 @@ object NoteStore {
         val sb = StringBuilder()
         sb.append(digest.trim()).append("\n\n---\n\n## 原始转写\n\n")
         for (e in note.entries) {
-            // 截图已经在整理稿的「本课图示」里出现过了，这里只留文字，免得导出的文档里图重复两遍
+            // 截图已经在整理稿的正文里出现过了，这里只留文字，免得导出的文档里图重复两遍
             if (e.isImage) continue
             sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` ")
             if (e.star) sb.append("**★ 重点** ")

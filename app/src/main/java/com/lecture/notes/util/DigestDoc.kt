@@ -29,7 +29,7 @@ object DigestDoc {
     /**
      * AI 整理稿的完整文档。
      *
-     * [body] 是模型的正文，里面已经按 `[[IMGn]]` 记号把截图还原成了真图片
+     * [body] 是模型的正文，截图已经按时间戳插回了它该在的那一小节里
      * （见 [com.lecture.notes.net.LlmDigest.embedImages]）。
      */
     fun ai(note: Note, tag: String, body: String): String = header(note, tag) + body.trim() + "\n"

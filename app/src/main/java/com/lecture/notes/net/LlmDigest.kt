@@ -124,9 +124,9 @@ object LlmDigest {
         val plan = plan(note)
         if (plan.chunks.isEmpty()) throw LlmException("这篇笔记还没有内容")
 
-        // 流式回调也过一遍图片还原：边生成边看到的就是最终排版，不会闪出 [[IMG1]] 这种记号
+        // 流式回调也过一遍图片还原：边生成边看到的就是最终排版，图已经在它该在的小节里
         val live: ((String) -> Unit)? = onPartial?.let { cb ->
-            { md: String -> cb(embedImages(md, note, appendMissing = false)) }
+            { md: String -> cb(embedImages(md, note, appendFallback = false)) }
         }
 
         val body = try {
@@ -146,7 +146,7 @@ object LlmDigest {
         }
         // 模型爱把图塞在要点行中间（`- **图示**：![…](shots/x.jpg) 说明`），落盘前先提行：
         // 解析层只认独占一行的图片，不提行整张图就没了；导出的 .md / .html 也因此是干净的
-        MiniMarkdown.hoistImages(embedImages(body, note, appendMissing = true))
+        MiniMarkdown.hoistImages(embedImages(body, note))
     }
 
     /** 长课：各段并行出素材卡，再把这些卡片合成一版终稿。 */
@@ -273,16 +273,14 @@ object LlmDigest {
         }
 
     private fun chunk(note: Note): List<String> {
-        val marks = shotMarks(note)
         val out = ArrayList<String>()
         val sb = StringBuilder()
         for (e in note.entries) {
-            // 截图条目用它自己的说明文字顶上去，AI 才能把图里的要点也整理进小节；
-            // 前面再挂一个 [[IMGn]] 记号，模型看到就知道这里该放一张图
+            // 截图条目用它自己的说明文字顶上去，AI 把图上讲了什么揉进这一段的正文；
+            // 图片本身的位置由 App 按时间戳算（见 embedImages），不指望模型记住记号
             val body = e.digestText
             if (body.isBlank()) continue
-            val mark = e.image?.let { rel -> marks[rel]?.let { n -> "[[IMG$n]] " } }.orEmpty()
-            val line = "[" + Formats.mmss(e.atMs) + "] " + mark + if (e.star) "★ " + body else body
+            val line = "[" + Formats.mmss(e.atMs) + "] " + if (e.star) "★ " + body else body
             if (sb.isNotEmpty() && sb.length + line.length > CHUNK_CHARS) {
                 out.add(sb.toString())
                 sb.setLength(0)
@@ -293,75 +291,122 @@ object LlmDigest {
         return out
     }
 
-    /** 整篇里所有截图的顺序（从 1 开始编号）。分段时各段用同一套编号，合并也不会串。 */
+    /** 整篇里所有的截图，按截图时间排好。 */
     internal fun shots(note: Note): List<Entry> =
-        note.entries.filter { it.isImage && !it.image.isNullOrBlank() }
+        note.entries.filter { it.isImage && !it.image.isNullOrBlank() }.sortedBy { it.atMs }
 
-    private fun shotMarks(note: Note): Map<String, Int> =
-        shots(note).withIndex().associate { (i, e) -> e.image!! to (i + 1) }
-
-    /** `[[IMG1]]` 这类记号：模型把它单独放一行，App 再换成真正的图片。 */
+    /** 老提示词让模型抄回来的 `[[IMG1]]` 记号：现在还认得出来，统一擦掉。 */
     private val IMG_TOKEN = Regex("`?\\[\\[\\s*IMG\\s*(\\d+)\\s*]]`?")
+
+    /** 行内残留的「[图示]」占位词。 */
+    private val SHOT_TAG = Regex("`?\\[\\s*图\\s*示\\s*]`?")
+
+    /** 行首的「[图示]」「图示：」「**图示**：」——连同冒号一起擦掉，前面的列表符号留着。 */
+    private val SHOT_TAG_LEAD = Regex(
+        "^(\\s*(?:[-*+]\\s+)?)(?:\\*\\*)?(?:\\[\\s*图\\s*示\\s*]\\s*[:：]?|图\\s*示\\s*[:：])(?:\\*\\*)?\\s*"
+    )
 
     /** 正文里的 `[mm:ss]`，用来判断某张截图该落在哪句话下面。 */
     private val TS_RE = Regex("\\[(\\d{1,2}):(\\d{2})]")
 
     /**
-     * 把整理稿里的 `[[IMGn]]` 记号换成 `![课堂截图 mm:ss](shots/x.jpg)`。
+     * 把每一张截图插回正文里「当时正在讲它的那句话」下面。
      *
-     * [appendMissing] 为真时，模型漏放回去的截图会统一补进末尾的「本课图示」小节 ——
-     * 宁可图都堆在最后，也不能因为模型漏抄一个记号就把截图弄丢。
-     * 认不出的记号（模型自己编的编号）直接删掉，不在正文里留一串乱码。
+     * 位置是 App 自己算的，不问模型：模型只要一偷懒，整篇的图就会全堆到文末 ——
+     * 而「这张图是什么时候截的」App 本来就知道，整理稿里又留着 `[mm:ss]`，
+     * 于是「插到不晚于它的最后一条要点下面」就能让图回到它该在的那一小节里。
+     *
+     * 模型偶尔还会自己把 `[[IMG1]]`、`[图示]` 抄进正文，先统一擦干净再插，
+     * 免得成品里留一串看不懂的记号。
+     *
+     * [appendFallback] 为真时，正文一行时间戳都没有（模型把时间戳全删了）才退回
+     * 文末的「本课图示」小节 —— 位置差一点也比丢图好。流式预览传 false：
+     * 正文还没吐出来的时候不该先在文末滚一排图。
      */
-    internal fun embedImages(md: String, note: Note, appendMissing: Boolean): String {
+    internal fun embedImages(md: String, note: Note, appendFallback: Boolean = true): String {
         val all = shots(note)
         if (all.isEmpty()) return md
-        val used = HashSet<String>()
-        val body = IMG_TOKEN.replace(md) { m ->
-            val e = m.groupValues[1].toIntOrNull()?.let { all.getOrNull(it - 1) }
-            val rel = e?.image
-            if (rel == null) {
-                ""
-            } else {
-                used.add(rel)
-                "![课堂截图 " + Formats.mmss(e.atMs) + "](" + rel + ")"
-            }
-        }
-        if (!appendMissing) return body
-        val missing = all.filter { it.image != null && it.image !in used }
-        if (missing.isEmpty()) return body
-        // 模型漏放记号的图，按时间戳插到「当时正在讲它的那句话」下面；
-        // 实在找不到时间戳（模型没照要求保留）才退回文末的「本课图示」兜底
-        val placed = placeMissing(body, missing)
+        val body = stripMarks(md)
+        val placed = placeByTime(body, all)
         if (placed != null) return placed
-        return (body.trimEnd() + "\n" +
-            NoteStore.shotsSection(note, onlyRels = missing.mapNotNull { it.image }.toSet())).trim()
+        if (!appendFallback) return body
+        return (body.trimEnd() + "\n\n" + NoteStore.shotsSection(note)).trim()
+    }
+
+    /** 擦掉模型抄回来的图片记号与占位词，顺手收掉被擦空的行。 */
+    private fun stripMarks(md: String): String {
+        val out = StringBuilder(md.length)
+        for (raw in md.replace("\r\n", "\n").replace('\r', '\n').split('\n')) {
+            var line = raw
+            if (line.contains("[[")) line = IMG_TOKEN.replace(line, "")
+            if (line.contains("图")) {
+                line = SHOT_TAG.replace(line, "")
+                val m = SHOT_TAG_LEAD.find(line)
+                if (m != null) line = m.groupValues[1] + line.substring(m.range.last + 1)
+            }
+            line = line.trimEnd()
+            val bare = line.trimStart()
+            if (bare.isEmpty() || bare == "-" || bare == "*" || bare == "+") {
+                out.append('\n')
+                continue
+            }
+            out.append(line).append('\n')
+        }
+        return out.toString().replace(Regex("\n{3,}"), "\n\n").trim()
     }
 
     /**
-     * 把模型漏放记号的截图，插到时间上最贴近它的那一行后面。
+     * 每张图插到时间上最贴近的那条要点下面。
      *
-     * 整理稿里每个要点都带着 `[mm:ss]`，截图也知道自己是什么时候截的，所以「这张图该放哪」
-     * 其实是个能算出来的问题：挑出时间戳不大于截图时间、且最靠后的那一行，图就插在它下面。
-     * 比正文第一句还早的，插在第一句带时间戳的话前面。
-     * 整篇一行时间戳都没有就返回 null，交给调用方退回文末汇总 —— 图丢了比位置差严重得多。
+     * 落点只认「带时间戳的正文行」：标题行不算（插在标题和正文之间很别扭），
+     * 表格行、代码块也不算（插进去会把表格和代码拦腰截断）。
+     * 比正文第一句还早的图放在最前面。整篇一个时间戳都没有就返回 null，交给调用方兜底。
      */
-    private fun placeMissing(body: String, missing: List<Entry>): String? {
-        val lines = body.split('\n').toMutableList()
-        if (lines.none { tsOf(it) >= 0 }) return null
-        for (e in missing.sortedBy { it.atMs }) {
+    private fun placeByTime(body: String, images: List<Entry>): String? {
+        val lines = body.split('\n')
+        val anchors = anchorsOf(lines)
+        if (anchors.isEmpty()) return null
+        val buckets = HashMap<Int, MutableList<Entry>>()
+        for (e in images) {
             val want = (e.atMs / 1000L).toInt()
             var at = -1
-            for (i in lines.indices) {
-                val t = tsOf(lines[i])
-                if (t in 0..want) at = i
-            }
-            if (at < 0) at = lines.indexOfFirst { tsOf(it) >= 0 } - 1
-            val block = NoteStore.shotBlock(e).trimEnd().split('\n')
-            lines.addAll(at + 1, block)
-            lines.add(at + 1 + block.size, "")
+            for (i in anchors) if (tsOf(lines[i]) in 0..want) at = i
+            if (at < 0) at = anchors.first() - 1
+            buckets.getOrPut(at) { ArrayList() }.add(e)
         }
-        return lines.joinToString("\n").trim()
+        val out = ArrayList<String>(lines.size + images.size * 5)
+        buckets.remove(-1)?.let { head ->
+            for (e in head) {
+                out.add(NoteStore.shotBlock(e).trimEnd())
+                out.add("")
+            }
+        }
+        for ((i, line) in lines.withIndex()) {
+            out.add(line)
+            val group = buckets[i] ?: continue
+            for (e in group) {
+                out.add("")
+                out.add(NoteStore.shotBlock(e).trimEnd())
+            }
+        }
+        return out.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
+    }
+
+    /** 能当截图落点的行：带时间戳的正文行（标题、表格、代码块都不算）。 */
+    private fun anchorsOf(lines: List<String>): List<Int> {
+        val out = ArrayList<Int>()
+        var fence = false
+        for ((i, line) in lines.withIndex()) {
+            val t = line.trimStart()
+            if (t.startsWith("```")) {
+                fence = !fence
+                continue
+            }
+            if (fence || tsOf(line) < 0) continue
+            if (t.startsWith("#") || t.startsWith("|") || t.startsWith(">")) continue
+            out.add(i)
+        }
+        return out
     }
 
     /** 一行里 `[mm:ss]` 的时间戳换成秒；这行没有时间戳就返回 -1。 */
@@ -792,8 +837,9 @@ object LlmDigest {
            成立条件、例子、易错点、考点；一条只说一件事，不要写成流水账；
         3. 这一步只做「提取和清洗」，不要重排体系、不要合并小节，也绝不补充原文没有的内容；
         4. 每个要点开头保留对应时间戳，写成反引号包起来的形式，例如 `[03:12]`；
-        5. 带 [[IMG1]] 这样标记的行，是老师当时展示的课件截图；请原样保留标记，
-           并把标记后面的说明当作图上已有的内容整理进对应小节；
+        5. 带「[图示]」的行是老师当时展示的课件截图：App 会把图片和它的说明自动插回对应位置，
+           你不用管图放在哪，只要把图上的信息揉进这一段的要点里，并在相关要点上保留这一行的时间戳；
+           不要在正文里写「[图示]」，也不要把图上的条目原样再抄一遍；
         6. 删掉寒暄、重复和口头禅；老师强调「要记住 / 必考 / 作业」的内容必须保留；
         7. 按上下文改正明显的同音字错误，把没说完的话补完整，但不要编造。
     """.trimIndent()
@@ -807,7 +853,7 @@ object LlmDigest {
      */
     private val SKELETON = """
         你是课程笔记的体系化编辑。下面是一堂网课的内容（语音转写或分段整理出的素材），
-        每句带 [mm:ss] 时间戳，中间可能有 [[IMG1]] 这样的截图标记。
+        每句带 [mm:ss] 时间戳，中间可能有老师展示课件时的「[图示]」说明。
 
         请把它编辑成一份**成体系**的课堂笔记。判断标准只有一条：
         **同学不看录播、只听这份笔记，也能把这节课学会。**
@@ -856,8 +902,9 @@ object LlmDigest {
         1. 层级最多三层（## / ### / -），不要用 ####，也不要自己写 "#" 大标题（标题由 App 添加）；
         2. **不要堆标题**：一个小节下 3-6 条要点就够，把零碎的话归并成完整的句子，别一句话一个标题；
         3. 保留原文的时间戳，写成反引号包起来的形式，例如 `[03:12]`，放在对应要点开头或句末；
-        4. 正文里出现 [[IMG1]] 这类标记时，把标记**单独放一行**插在它**对应时间戳那句话的下面**，
-           原样照抄标记（不要加反引号、不要改写、不要翻译），并把图上的说明融进正文；
+        4. 素材里带「[图示]」（或一张课件截图的说明）的地方，是老师当时展示的课件；
+           App 会把图片连同它的看图说明自动插到对应时间戳的位置，你只要把这一处的时间戳留在
+           相关要点上，别在正文里写「[图示]」，也别把图上的条目重复抄一遍；
         5. 合并重复内容、删掉口水话，但老师强调的重点、作业、考试范围不能删；
         6. 修正明显的同音字错误、把不通顺的句子补顺；不要编造原文没有的知识点；
         7. 笔记里只写知识本身，不要出现「这段转写」「视频里」「录音中」这类话；
@@ -872,7 +919,7 @@ object LlmDigest {
         下面是同一堂课分几段整理出的几版笔记，内容可能有重复、小节可能对不上。
         请把它们合并成**一份**不重复、层级连贯的体系化笔记：把同一主题的要点归到同一个大节下，
         重复的小节和要点只留一条，时间戳照旧保留。
-        合并只做归并和去重：不要发明原文没有的新内容，也不要把 [[IMG1]] 这类标记弄丢或改号。
+        合并只做归并和去重：不要发明原文没有的新内容，也不要把截图处的时间戳弄丢。
 
     """.trimIndent() + SKELETON
 
@@ -883,11 +930,13 @@ object LlmDigest {
     """.trimIndent()
 
     private val VISION_PROMPT = """
-        这是我在网课上截的一张图。请输出一段可以直接放进笔记的 Markdown 说明：
-        1. 第一行说清这张图在讲什么，不超过 30 字，以 "- " 开头；
-        2. 图上的标题、定义、结论、公式、代码，逐条抄下来，写成 "- " 开头的列表；短公式用反引号包起来，例如 `a²+b²=c²`；
-        3. 如果是表格，用 Markdown 表格还原；如果是流程图、结构图、箭头关系，写成 "- A → B → C" 说明层次；
+        这是我在网课上截的一张图。请把图上的内容整理成能直接放进笔记的 Markdown：
+        1. 第一行以 "- " 开头，一句话说清这张图在讲什么；直接写内容本身，不要用
+           「这张图 / 该图 / 图片中」开头，不要「展示了」「主要元素包括」这类套话，不超过 25 字；
+        2. 图上真实出现的标题、定义、结论、公式、代码，逐条抄下来，每条以 "- " 开头，
+           一条只说一件事，每条不超过 30 字；短公式用反引号包起来，例如 `a²+b²=c²`；
+        3. 是表格就用 Markdown 表格还原；是流程图、结构图、箭头关系，就写成 "- A → B → C" 说明层次；
         4. 最后一行以 "> 要点：" 开头，写这张图最需要记住的 1-2 点。
-        只写图上真实存在的内容；看不清的地方写「（图中字迹模糊）」，绝对不要编造。
+        一共不超过 8 条；只写图上真实存在的内容，看不清就写「（图中字迹模糊）」，绝对不要编造。
     """.trimIndent()
 }

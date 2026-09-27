@@ -129,4 +129,19 @@ class NoteDigestTest {
             lines[at - 1].startsWith("- `[")
         )
     }
+
+    /** 早于第一条要点、或落在两节缝隙里的截图，也要落进正文，不能漏到文末。 */
+    @Test
+    fun screenshotOutsideEverySectionStillLandsInTheBody() {
+        val n = note(*transcript)
+        n.entries.add(Entry(1_000L, "", image = "shots/early.jpg", caption = "板书：本讲提纲", analyzed = true))
+        n.entries.add(Entry(540_000L, "", image = "shots/late.jpg", caption = "板书：存储结构对比", analyzed = true))
+        n.entries.sortBy { it.atMs }
+        val md = NoteDigest.build(n).first
+
+        assertTrue("两张图都要在整理稿里：$md", md.contains("shots/early.jpg"))
+        assertTrue("两张图都要在整理稿里：$md", md.contains("shots/late.jpg"))
+        assertTrue("图片不该再堆到文末的「本课图示」：$md", !md.contains("本课图示"))
+        assertTrue("早于第一条要点的图要落在第一节的正文里", md.indexOf("shots/early.jpg") > md.indexOf("## "))
+    }
 }

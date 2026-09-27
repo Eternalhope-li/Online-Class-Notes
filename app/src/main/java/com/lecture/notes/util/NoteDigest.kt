@@ -170,6 +170,14 @@ object NoteDigest {
 
         val shots = note.entries.filter { it.isImage && it.image != null }
         val used = HashSet<String>()
+        // 截图归到「最后一次翻篇的那一节」：一节的结束就是下一节的开始，
+        // 所以落在两节缝隙里（那段时间老师没说出可保留的要点）的图也不会被漏到文末
+        val bySection = HashMap<Int, MutableList<Entry>>()
+        for (e in shots) {
+            var idx = 0
+            for ((i, sec) in r.sections.withIndex()) if (sec.startMs <= e.atMs) idx = i
+            bySection.getOrPut(idx) { ArrayList() }.add(e)
+        }
 
         if (r.sections.isEmpty()) {
             sb.append("_这篇记录还没有足够的内容可以整理。_\n")
@@ -185,7 +193,7 @@ object NoteDigest {
             // 图就落在「当时正在讲它的那句话」下面，而不是整节末尾堆一堆
             val merged = ArrayList<Entry>(sec.bullets.size + 4)
             merged.addAll(sec.bullets)
-            merged.addAll(shots.filter { e -> e.atMs in sec.startMs..sec.endMs })
+            bySection[i]?.let { merged.addAll(it) }
             merged.sortBy { it.atMs }
             for (e in merged) {
                 if (e.isImage) {

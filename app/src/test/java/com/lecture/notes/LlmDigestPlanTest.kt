@@ -102,13 +102,22 @@ class LlmDigestPlanTest {
         return n
     }
 
-    /** 模型漏放记号的图，也要按时间戳落回「当时那句话」下面，而不是堆到文末。 */
+    /** 两张图、两个时间点，用来看图是不是各自落在自己那一节里。 */
+    private fun twoShotNote(): Note {
+        val n = Note("t2", "测试课二", 0L, 0L, 0L, "mic")
+        n.entries.add(Entry(10_000L, "讲定义"))
+        n.entries.add(Entry(20_000L, "", image = "shots/a.jpg", caption = "图一", analyzed = true))
+        n.entries.add(Entry(120_000L, "讲遍历"))
+        n.entries.add(Entry(130_000L, "", image = "shots/b.jpg", caption = "图二", analyzed = true))
+        return n
+    }
+
+    /** 截图按时间戳落回「当时那句话」下面，而不是堆到文末。 */
     @Test
-    fun missingShotLandsUnderTheLineItFollows() {
+    fun shotLandsUnderTheLineItFollows() {
         val md = LlmDigest.embedImages(
             "## 一、二叉树\n\n- `[00:10]` 讲定义\n- `[01:20]` 讲遍历\n- `[02:00]` 讲性质\n",
-            shotNote(),
-            appendMissing = true
+            shotNote()
         )
         val lines = md.lines()
         val bullet = lines.indexOfFirst { it.contains("[00:10]") }
@@ -118,45 +127,79 @@ class LlmDigestPlanTest {
         assertTrue("时间戳够用的时候不该再退回文末汇总：$md", !md.contains("本课图示"))
     }
 
+    /** 一节课几张图，各自落到自己那一节，不能全挤到最后或全挤到开头。 */
     @Test
-    fun screenshotMarkerRidesWithTheChunk() {
-        val chunk = LlmDigest.plan(shotNote()).chunks[0]
-        assertTrue("截图行要带 [[IMG1]] 记号，模型才知道这里该插图：$chunk", chunk.contains("[[IMG1]]"))
-        assertTrue("说明文字也要照旧带上", chunk.contains("课件：二叉树定义"))
+    fun eachShotLandsInItsOwnSection() {
+        val md = LlmDigest.embedImages(
+            "## 一、定义\n\n- `[00:10]` 定义是什么\n### 1.1 存储\n- `[02:00]` 遍历怎么走\n",
+            twoShotNote()
+        )
+        val bar = md.indexOf("[02:00]")
+        val first = md.indexOf("shots/a.jpg")
+        val second = md.indexOf("shots/b.jpg")
+        assertTrue("两张图都要在正文里：$md", first in 0 until second)
+        assertTrue("图一要落在「讲定义」那一节：$md", first < bar)
+        assertTrue("图二不能跑到最前面：$md", second > bar)
+        assertFalse("都放回正文了就不该再有末尾汇总", md.contains("本课图示"))
     }
 
+    /** 图旁边要带着它自己的看图说明，不能只剩一张孤零零的图。 */
     @Test
-    fun imageMarkerTurnsIntoARealImage() {
-        val md = LlmDigest.embedImages("## 一、二叉树\n\n[[IMG1]]\n\n- 定义\n", shotNote(), appendMissing = true)
-        assertTrue("记号要换成真图片：$md", md.contains("![课堂截图 01:05](shots/a.jpg)"))
-        assertFalse("记号不该留在正文里", md.contains("[[IMG"))
-        assertFalse("已经放回正文的图不用再补到末尾", md.contains("本课图示"))
+    fun shotKeepsItsCaptionNextToIt() {
+        val md = LlmDigest.embedImages("## 一、二叉树\n\n- `[00:10]` 讲定义\n", shotNote())
+        assertTrue("说明要跟图在一起：$md", md.contains("课件：二叉树定义"))
+        assertTrue("说明要带自己的时间戳：$md", md.contains("`[01:05]`"))
     }
 
+    /** 老提示词留下的 [[IMGn]] / [图示] 记号要擦干净，别出现在成品里。 */
     @Test
-    fun backtickedMarkerStillBecomesAnImage() {
-        val md = LlmDigest.embedImages("## 一、二叉树\n\n- 定义\n\n`[[IMG1]]`\n", shotNote(), appendMissing = true)
-        assertTrue("模型给记号套了反引号也要认出来：$md", md.contains("![课堂截图 01:05](shots/a.jpg)"))
-    }
-
-    @Test
-    fun droppedMarkerIsReplacedByTheImageAtTheEnd() {
-        // 模型整段忘了抄记号也不能丢图，统一补到末尾的「本课图示」
-        val md = LlmDigest.embedImages("## 一、二叉树\n\n- 定义\n", shotNote(), appendMissing = true)
-        assertTrue("漏掉的图要补到末尾：$md", md.contains("本课图示"))
+    fun leftoverMarkersAreCleanedUp() {
+        val md = LlmDigest.embedImages(
+            "## 一、二叉树\n\n- `[00:10]` 讲定义\n\n[图示]\n\n`[[IMG1]]`\n\n- `[01:20]` 遍历\n",
+            shotNote()
+        )
+        assertFalse("记号不该留在正文里：$md", md.contains("[[IMG"))
+        assertFalse("占位词也不该留着：$md", md.contains("[图示]"))
         assertTrue(md.contains("![课堂截图 01:05](shots/a.jpg)"))
     }
 
+    /** 模型把时间戳全删了也不能丢图，退回文末的「本课图示」。 */
     @Test
-    fun streamPreviewDoesNotAppendLeftoverImages() {
-        // 流式预览每次都要过一遍还原，但补图只能补一次，否则预览里会越滚越长
-        val md = LlmDigest.embedImages("## 一、二叉树\n", shotNote(), appendMissing = false)
+    fun noTimestampFallsBackToTheEndSection() {
+        val md = LlmDigest.embedImages("## 一、二叉树\n\n- 定义\n", shotNote())
+        assertTrue("没有时间戳只能补到末尾：$md", md.contains("本课图示"))
+        assertTrue(md.contains("![课堂截图 01:05](shots/a.jpg)"))
+    }
+
+    /** 流式预览传 appendFallback = false：正文还没吐出来的时候别先在文末滚一排图。 */
+    @Test
+    fun streamPreviewDoesNotAppendFallback() {
+        val md = LlmDigest.embedImages("## 一、二叉树\n", shotNote(), appendFallback = false)
         assertFalse(md.contains("本课图示"))
+    }
+
+    /** 标题行不能当落点，否则图会插在标题和它的正文之间。 */
+    @Test
+    fun headingIsNotUsedAsAnchor() {
+        val md = LlmDigest.embedImages(
+            "## 一、二叉树 `[00:00]`\n\n- `[01:00]` 先讲定义\n",
+            shotNote()
+        )
+        val image = md.indexOf("![课堂截图")
+        assertTrue("图要落在正文行后面：$md", image > md.indexOf("先讲定义"))
+    }
+
+    /** 截图那一行要带着自己的说明和时间戳进素材，AI 才知道图上讲了什么。 */
+    @Test
+    fun screenshotCaptionRidesWithTheChunk() {
+        val chunk = LlmDigest.plan(shotNote()).chunks[0]
+        assertTrue("说明文字要跟着转写一起发出去：$chunk", chunk.contains("课件：二叉树定义"))
+        assertTrue("截图行的时间戳不能丢：$chunk", chunk.contains("[01:05]"))
     }
 
     @Test
     fun inventedMarkerIsDroppedQuietly() {
-        val md = LlmDigest.embedImages("## 一、二叉树\n\n[[IMG7]]\n", shotNote(), appendMissing = true)
+        val md = LlmDigest.embedImages("## 一、二叉树\n\n[[IMG7]]\n", shotNote())
         assertFalse("模型自己编的编号不该以原文形式漏出来", md.contains("[[IMG7]]"))
         assertTrue("真正的图还是要补上", md.contains("shots/a.jpg"))
     }
