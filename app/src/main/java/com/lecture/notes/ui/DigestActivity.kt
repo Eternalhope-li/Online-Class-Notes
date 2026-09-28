@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
 import android.util.TypedValue
+import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -62,10 +63,12 @@ class DigestActivity : AppCompatActivity() {
             getString(if (Prefs.digestRich) R.string.digest_view_raw else R.string.digest_view_rich)
 
         // 顶部那颗按钮：平时是「用 AI 体系化整理」，后台正在整理这篇时变成「取消生成」
-        binding.btnAi.setOnClickListener {
-            if (DigestJob.isRunning(note?.id)) DigestJob.cancel() else if (!busy) runAi()
-        }
+        binding.btnAi.setOnClickListener { onAiAction() }
         binding.btnStaleUpdate.setOnClickListener { updateStale() }
+        // 正文字栏的宽度只跟滚动区有多宽有关：宽度一变（第一次布局、转屏、分屏拖大小）就重算一次
+        binding.scroll.addOnLayoutChangeListener { _, l, _, r, _, ol, _, or, _ ->
+            if (r - l != or - ol) fitColumn()
+        }
         binding.scroll.setOnScrollChangeListener { _, _, _, _, _ ->
             // 用户往上翻看前面内容时就别再自动往下滚了
             autoScroll = !binding.scroll.canScrollVertically(1)
@@ -257,7 +260,7 @@ class DigestActivity : AppCompatActivity() {
     /** 失败或取消后回到上一版（后台任务没写盘，磁盘上还是旧的那份）。 */
     private fun restore(msg: String) {
         if (markdown.isNotBlank()) show(markdown, null)
-        binding.status.text = msg
+        setStatus(msg)
     }
 
     // ------------------------------------------------------------ 菜单
@@ -269,7 +272,8 @@ class DigestActivity : AppCompatActivity() {
             return true
         }
         when (id) {
-            R.id.action_ai -> runAi()
+            // 工具栏那颗 ✨ 和顶部按钮是同一个入口：整理中再点一下同样是取消
+            R.id.action_ai -> onAiAction()
             R.id.action_rebuild -> rebuild()
             R.id.action_view -> {
                 Prefs.digestRich = !Prefs.digestRich
@@ -326,6 +330,7 @@ class DigestActivity : AppCompatActivity() {
     private fun show(md: String, status: String?) {
         markdown = md
         val scale = Prefs.digestFontScale
+        val twoPane = twoPane()
         if (Prefs.digestRich) {
             binding.contentBox.visibility = View.VISIBLE
             binding.content.visibility = View.GONE
@@ -333,24 +338,95 @@ class DigestActivity : AppCompatActivity() {
             val n = if (isDemo) null else note
             renderer.imageDir = if (n == null) null else NoteStore.noteDir(n.id)
             renderer.onImageClick = { rel -> openShot(rel) }
-            renderer.render(binding.contentBox, md, binding.scroll)
+            // 宽到放得下两栏（平板横过来）时，目录搬到左边那根常驻侧栏，
+            // 正文右边收成一条阅读栏 —— 而不是让每行八十个字横着扫，同时目录还压在正文顶上占高度
+            val side = binding.tocPane
+            renderer.shotMaxDp = if (twoPane) SHOT_MAX_LAND_DP else NoteRenderer.SHOT_MAX_DP
+            renderer.columnWidthDp = columnWidthDp(twoPane)
+            renderer.render(binding.contentBox, md, binding.scroll, if (twoPane) side else null)
+            binding.sidePane?.visibility =
+                if (twoPane && (side?.childCount ?: 0) > 0) View.VISIBLE else View.GONE
         } else {
+            binding.sidePane?.visibility = View.GONE
             binding.contentBox.visibility = View.GONE
             binding.content.visibility = View.VISIBLE
             binding.content.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f * scale)
             binding.content.text = md
         }
+        fitColumn()
         binding.empty.visibility = if (md.isBlank()) View.VISIBLE else View.GONE
         binding.scroll.scrollTo(0, 0)
         if (status != null) {
-            binding.status.text = when {
+            setStatus(when {
                 isDemo -> status
                 isAi -> getString(R.string.digest_status_ai, status)
                 else -> getString(R.string.digest_status_local, status)
-            }
+            })
         }
+        applyTopRow(twoPane)
         // 已经有 AI 整理稿时按钮改叫「重新整理一遍」，不然用户以为要重新生成一份
-        if (!busy) binding.btnAi.text = getString(aiButtonLabel())
+        if (!busy) updateAiLabels()
+    }
+
+    /** 屏幕宽到放得下「目录 + 正文」两栏吗（平板横过来就在这条线以上）。 */
+    private fun twoPane(): Boolean =
+        binding.tocPane != null && resources.configuration.screenWidthDp >= TWO_PANE_MIN_DP
+
+    /**
+     * 上方那条「已保存的整理稿 ＋ 重新 AI 整理一遍」在横屏两栏时整行收进工具栏：
+     * 状态变副标题，按钮变成工具栏上一个写着字的项。横过来屏幕只有六七百 dp 高，
+     * 省下的这一行直接变成正文。
+     */
+    private fun applyTopRow(twoPane: Boolean) {
+        val row = binding.statusRow ?: return
+        row.visibility = if (twoPane) View.GONE else View.VISIBLE
+        binding.toolbar.menu.findItem(R.id.action_ai)?.setShowAsAction(
+            if (twoPane) {
+                MenuItem.SHOW_AS_ACTION_ALWAYS or MenuItem.SHOW_AS_ACTION_WITH_TEXT
+            } else {
+                MenuItem.SHOW_AS_ACTION_IF_ROOM
+            }
+        )
+        binding.toolbar.subtitle = if (twoPane) binding.status.text else null
+    }
+
+    /** 换状态文字：收进工具栏时副标题也得跟着换，不然它停在上一句上骗人。 */
+    private fun setStatus(text: CharSequence) {
+        binding.status.text = text
+        if (binding.statusRow?.visibility == View.GONE) binding.toolbar.subtitle = text
+    }
+
+    /** 顶部按钮和工具栏上那颗「AI」项的文案：两处永远是同一句话。 */
+    private fun updateAiLabels() {
+        val label = getString(aiButtonLabel())
+        binding.btnAi.text = label
+        binding.toolbar.menu.findItem(R.id.action_ai)?.title = label
+    }
+
+    /** 「用 AI 体系化整理」入口：正在整理这篇时再点一下就是取消。 */
+    private fun onAiAction() {
+        if (DigestJob.isRunning(note?.id)) DigestJob.cancel() else if (!busy) runAi()
+    }
+
+    /**
+     * 正文收成一条 900dp 的阅读栏居中。
+     *
+     * 平板横过来之后屏幕有一千多 dp 宽，一行能排八十来个字，眼睛得横着扫很久 —— 这是
+     * 「横过来看着有点扁」的根源之一。手机上算出来是 0（本来就窄），等于什么都没动。
+     */
+    private fun fitColumn() {
+        val col = binding.column
+        val room = binding.scroll.width - binding.scroll.paddingLeft - binding.scroll.paddingRight
+        if (room <= 0) return
+        val max = (READING_COLUMN_DP * resources.displayMetrics.density).toInt()
+        val pad = ((room - max) / 2).coerceAtLeast(0)
+        if (col.paddingLeft != pad) col.setPadding(pad, 0, pad, 0)
+    }
+
+    /** 正文栏有多宽（dp）：屏幕宽减掉目录侧栏和滚动区的左右内边距，再收在阅读栏以内。 */
+    private fun columnWidthDp(twoPane: Boolean): Int {
+        val pane = if (twoPane) SIDE_PANE_DP else 0
+        return (resources.configuration.screenWidthDp - pane - 32).coerceAtMost(READING_COLUMN_DP)
     }
 
     /** 整理稿里点一张截图 → 打开大图页。 */
@@ -376,9 +452,9 @@ class DigestActivity : AppCompatActivity() {
         } else {
             binding.progress.isIndeterminate = true
         }
-        if (msg != null) binding.status.text = msg
-        binding.btnAi.text = getString(aiButtonLabel())
-        binding.toolbar.menu.findItem(R.id.action_ai)?.isEnabled = !b
+        if (msg != null) setStatus(msg)
+        updateAiLabels()
+        // 整理中那颗 ✨ 不跟别的项一起置灰：它就是「取消生成」（两栏时顶部那行按钮已经收进工具栏了）
         binding.toolbar.menu.findItem(R.id.action_rebuild)?.isEnabled = !b
         binding.toolbar.menu.findItem(R.id.action_export)?.isEnabled = !b
     }
@@ -395,5 +471,17 @@ class DigestActivity : AppCompatActivity() {
     companion object {
         /** 打开「排版预览」用的示例笔记，不落盘。 */
         const val EXTRA_DEMO = "demo"
+
+        /** 宽到能并排放「目录 + 阅读栏」的界线（平板横过来就在这条线以上）。 */
+        private const val TWO_PANE_MIN_DP = 840
+
+        /** 目录侧栏占的宽度：200dp 侧栏 + 1dp 分隔线。目录只列小节名，用不着一条宽栏。 */
+        private const val SIDE_PANE_DP = 201
+
+        /** 正文阅读栏的上限：再宽也是一行这么多字，眼睛才好扫。 */
+        private const val READING_COLUMN_DP = 900
+
+        /** 横屏（两栏）时截图的宽度上限：屏幕矮，图收一点，正文才露得出来。 */
+        private const val SHOT_MAX_LAND_DP = 460
     }
 }

@@ -141,4 +141,117 @@ class NoteRendererTest {
         }
         assertTrue("字号倍率应该起作用", titleSize(1.3f) > titleSize(1f))
     }
+
+    /**
+     * 截图要有宽度上限：宽屏（平板竖屏的整栏、横屏的阅读栏）上不加限制的话，
+     * 一张图能把整栏占满，一页翻下去全是图。
+     */
+    @Test
+    fun shotsAreCappedOnWideColumns() {
+        val ctx = context()
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        NoteRenderer(ctx).apply { columnWidthDp = 1200 }
+            .render(root, "- 要点\n\n![课堂截图 00:12](shots/x.jpg)\n", null)
+        val dense = ctx.resources.displayMetrics.density
+        val wide = (1200f * dense).toInt()
+        measure(root, wide)
+        val all = ArrayList<View>()
+        collect(root, all)
+        val iv = all.filterIsInstance<ImageView>().first()
+        val holder = iv.parent as View
+        val cap = (500f * dense).toInt()
+        assertTrue("图不该顶满 1200dp 宽的栏：${holder.width}", holder.width < wide)
+        assertTrue("图宽要收在 500dp 以内：${holder.width} / $cap", holder.width <= cap + 1)
+    }
+
+    /** 横屏（屏幕矮）时页面能把上限调小一点，让图再收些、正文多露两行。 */
+    @Test
+    fun shotCapCanBeLoweredForShortScreens() {
+        val ctx = context()
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        NoteRenderer(ctx).apply {
+            columnWidthDp = 1200
+            shotMaxDp = 460
+        }.render(root, "- 要点\n\n![课堂截图 00:12](shots/x.jpg)\n", null)
+        val dense = ctx.resources.displayMetrics.density
+        measure(root, (1200f * dense).toInt())
+        val all = ArrayList<View>()
+        collect(root, all)
+        val holder = all.filterIsInstance<ImageView>().first().parent as View
+        val cap = (460f * dense).toInt()
+        assertTrue("横屏调小的上限要生效：${holder.width} / $cap", holder.width <= cap + 1)
+    }
+
+    /** 栏比上限还窄（手机）时按栏宽来：500dp 的上限不能把图撑出栏外。 */
+    @Test
+    fun shotsKeepTheColumnWidthOnNarrowScreens() {
+        val ctx = context()
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        NoteRenderer(ctx).apply { columnWidthDp = 320 }
+            .render(root, "- 要点\n\n![课堂截图 00:12](shots/x.jpg)\n", null)
+        val narrow = (320f * ctx.resources.displayMetrics.density).toInt()
+        measure(root, narrow)
+        val all = ArrayList<View>()
+        collect(root, all)
+        val holder = all.filterIsInstance<ImageView>().first().parent as View
+        assertTrue("窄栏里图就按栏宽来：${holder.width}", holder.width <= narrow)
+        assertTrue("窄栏里不该被 500dp 的下限撑开：${holder.width}", holder.width > narrow / 2)
+    }
+
+    /** 没人告诉过栏宽（老调用方）时不限制，还是铺满整栏 —— 别让新参数变成新的默认行为。 */
+    @Test
+    fun shotsFillTheColumnWhenWidthIsUnknown() {
+        val ctx = context()
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        NoteRenderer(ctx).render(root, "- 要点\n\n![课堂截图 00:12](shots/x.jpg)\n", null)
+        val wide = (1200f * ctx.resources.displayMetrics.density).toInt()
+        measure(root, wide)
+        val all = ArrayList<View>()
+        collect(root, all)
+        val holder = all.filterIsInstance<ImageView>().first().parent as View
+        assertEquals("不知道栏宽就照旧铺满", wide, holder.width)
+    }
+
+    private fun measure(root: View, width: Int) {
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        root.layout(0, 0, width, root.measuredHeight.coerceAtLeast(1))
+    }
+
+    /**
+     * 横屏两栏：目录要整块交到侧栏容器里，不能再压在正文最上面 ——
+     * 横过来高度本来就只剩半屏，目录再占一条，正文就没剩多少了。
+     */
+    @Test
+    fun tocMovesToTheSidePaneWhenThereIsOne() {
+        val ctx = context()
+        val body = StringBuilder()
+        for (t in listOf("甲", "乙", "丙")) body.append("## 一、$t\n\n- $t 的内容\n\n")
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val side = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val renderer = NoteRenderer(ctx).apply { tocTitle = "本页目录" }
+        renderer.render(root, body.toString(), null, side)
+
+        val sideTexts = ArrayList<View>().also { collect(side, it) }
+            .filterIsInstance<TextView>().map { it.text?.toString().orEmpty() }
+        val bodyTexts = ArrayList<View>().also { collect(root, it) }
+            .filterIsInstance<TextView>().map { it.text?.toString().orEmpty() }
+        assertTrue("目录要落在侧栏里：$sideTexts", sideTexts.any { it == "本页目录" })
+        assertTrue("正文里不该再有一条目录：$bodyTexts", bodyTexts.none { it == "本页目录" })
+    }
+
+    /** 没给侧栏（竖屏）时，目录还是老老实实待在正文最上面。 */
+    @Test
+    fun tocStaysOnTopWithoutASidePane() {
+        val ctx = context()
+        val body = StringBuilder()
+        for (t in listOf("甲", "乙", "丙")) body.append("## 一、$t\n\n- $t 的内容\n\n")
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        NoteRenderer(ctx).apply { tocTitle = "本页目录" }.render(root, body.toString(), null, null)
+        val texts = ArrayList<View>().also { collect(root, it) }
+            .filterIsInstance<TextView>().map { it.text?.toString().orEmpty() }
+        assertTrue("竖屏目录还在正文里：$texts", texts.any { it == "本页目录" })
+    }
 }

@@ -28,6 +28,7 @@ import com.lecture.notes.util.MiniMarkdown.Callout
 import com.lecture.notes.util.MiniMarkdown.Span
 import com.lecture.notes.util.Thumbs
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 把整理稿渲染成「排版好」的一页笔记：
@@ -52,6 +53,18 @@ class NoteRenderer(context: Context) {
     /** 目录卡片的标题，由界面从字符串资源传进来。 */
     var tocTitle = "本页目录（点一下跳过去）"
 
+    /**
+     * 正文栏有多宽（dp），由页面算好传进来（横屏两栏时正文只有右边那一块）。
+     * 0 表示没人告诉过 —— 那就不限制截图宽度，按老规矩铺满整栏。
+     */
+    var columnWidthDp = 0
+
+    /**
+     * 整理稿里截图的宽度上限（dp）。页面按横竖屏给不同的值：横过来屏幕矮，图更该让位给正文，
+     * 一张图占掉半屏、字就只剩两行了。
+     */
+    var shotMaxDp = SHOT_MAX_DP
+
     /** 截图所在的笔记目录：渲染 `![图示](shots/x.jpg)` 时从这里取图。 */
     var imageDir: java.io.File? = null
 
@@ -73,9 +86,17 @@ class NoteRenderer(context: Context) {
     /**
      * 把 [markdown] 渲染进 [container]。
      * [scrollParent] 传入包裹 container 的 ScrollView，点击目录可直接滚过去。
+     * [tocHost] 是目录的去处：横屏时正文右边只够放一条阅读栏，目录就被移进左边那根侧栏，
+     * 而不是继续压在正文最上面占掉本就金贵的高度。传 null 就还是老样子（目录放正文最前面）。
      */
-    fun render(container: LinearLayout, markdown: String, scrollParent: View? = null) {
+    fun render(
+        container: LinearLayout,
+        markdown: String,
+        scrollParent: View? = null,
+        tocHost: LinearLayout? = null
+    ) {
         container.removeAllViews()
+        tocHost?.removeAllViews()
         val blocks = MiniMarkdown.parse(markdown)
         val toc = ArrayList<Pair<String, View>>()
         var section = 0
@@ -113,7 +134,11 @@ class NoteRenderer(context: Context) {
             i++
         }
 
-        if (toc.size >= 3) container.addView(tocCard(toc, scrollParent), 0)
+        if (toc.size >= 3) {
+            // 目录搬到侧栏（横屏）时这张卡住在一条窄栏里，字号和内边距都收一档
+            val card = tocCard(toc, scrollParent, compact = tocHost != null)
+            if (tocHost != null) tocHost.addView(card) else container.addView(card, 0)
+        }
     }
 
     // ------------------------------------------------------------------ 标题
@@ -279,6 +304,15 @@ class NoteRenderer(context: Context) {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(6f), 0, dp(6f))
         }
+        // 图和它的说明一起装在这个「撑到上限就停」的容器里，宽度等这一栏量出来之后再定。
+        // 为什么不在 ImageView 上写 maxWidth：那个属性只在 wrap_content 下生效，而 wrap_content
+        // 在小屏上又会被图片的原始像素撑出一栏之外 —— 两条路都不行，索性自己算。
+        val holder = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                shotWidthDp(), ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
         val iv = android.widget.ImageView(ctx).apply {
             adjustViewBounds = true
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
@@ -294,14 +328,28 @@ class NoteRenderer(context: Context) {
             iv.isClickable = true
             iv.setOnClickListener { onImageClick?.invoke(b.src) }
         }
-        box.addView(iv)
+        holder.addView(iv)
         if (b.alt.isNotBlank()) {
-            box.addView(tv(12.5f, onVariant).apply {
+            holder.addView(tv(12.5f, onVariant).apply {
                 text = rich(b.alt)
                 setPadding(0, dp(6f), 0, 0)
             })
         }
+        box.addView(holder)
         return box
+    }
+
+    /**
+     * 图连同它的说明占多宽：栏宽和 [shotMaxDp] 里小的那个；栏宽不知道（没人告诉过）
+     * 就还按老规矩铺满整栏。
+     *
+     * 叫「略微缩小」而不是「缩略图」：整栏宽的时候一张截图能占满整个屏，翻起来全是图、
+     * 看不到字；手机上这个上限比栏还宽，等于没限制。
+     */
+    private fun shotWidthDp(): Int {
+        val room = columnWidthDp
+        if (room <= 0) return ViewGroup.LayoutParams.MATCH_PARENT
+        return dp(min(room, shotMaxDp).toFloat())
     }
 
     private fun paraView(text: String): View = tv(15f, onSurface).apply {
@@ -470,32 +518,40 @@ class NoteRenderer(context: Context) {
 
     // ------------------------------------------------------------------ 目录
 
-    private fun tocCard(items: List<Pair<String, View>>, scrollParent: View?): View {
+    private fun tocCard(items: List<Pair<String, View>>, scrollParent: View?, compact: Boolean = false): View {
+        // 住进侧栏时这张卡只有 200dp 宽：正文里合适的那点留白，搁在这儿就又空又挤
+        val pad = dp(if (compact) 10f else 14f)
+        val vPad = dp(if (compact) 10f else 12f)
+        val titleSize = if (compact) 11.5f else 12.5f
+        val numSize = if (compact) 12f else 13f
+        val itemSize = if (compact) 13.5f else 14.5f
+        val rowPad = dp(if (compact) 6f else 7f)
+        val numWidth = dp(if (compact) 18f else 20f)
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             clipToOutline = true
             background = roundBg(blend(primary, if (isDark) 0.12f else 0.06f), 14f)
-            setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
+            setPadding(pad, vPad, pad, vPad)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(6f) }
+            ).apply { bottomMargin = if (compact) 0 else dp(6f) }
         }
-        card.addView(tv(12.5f, onVariant, true).apply {
+        card.addView(tv(titleSize, onVariant, true).apply {
             text = tocTitle
-            setPadding(0, 0, 0, dp(6f))
+            setPadding(0, 0, 0, dp(if (compact) 4f else 6f))
         })
         items.forEachIndexed { index, (title, target) ->
             val row = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 isClickable = true
-                setPadding(0, dp(7f), 0, dp(7f))
+                setPadding(0, rowPad, 0, rowPad)
             }
-            row.addView(tv(13f, primary, true).apply {
+            row.addView(tv(numSize, primary, true).apply {
                 text = (index + 1).toString()
-                layoutParams = LinearLayout.LayoutParams(dp(20f), ViewGroup.LayoutParams.WRAP_CONTENT)
+                layoutParams = LinearLayout.LayoutParams(numWidth, ViewGroup.LayoutParams.WRAP_CONTENT)
             })
-            row.addView(tv(14.5f, onSurface).apply {
+            row.addView(tv(itemSize, onSurface).apply {
                 text = title
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
@@ -738,5 +794,8 @@ class NoteRenderer(context: Context) {
 
     companion object {
         private const val SPAN_FLAG = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+
+        /** 整理稿里截图的宽度上限（dp），比它更窄的栏就按栏宽来。 */
+        const val SHOT_MAX_DP = 500
     }
 }
