@@ -232,7 +232,8 @@ object MiniMarkdown {
                     i++
                 }
                 val text = buf.toString().trim()
-                out.add(Block.Quote(text, calloutOf(text)))
+                // 空引用（模型只写了个「>」占位）直接丢掉，别在成品里留一个没有内容的方框
+                if (text.isNotEmpty()) out.add(Block.Quote(text, calloutOf(text)))
                 continue
             }
 
@@ -277,6 +278,12 @@ object MiniMarkdown {
                 continue
                 }
                 val unquoted = body.trim('"', '“', '”', '\'')
+                // 「- >」「- > 」这种只剩记号没有内容的行：整行丢掉。
+                // 照列表项渲染出来，成品里就多出一个孤零零的「>」（用户看到的「图示下面的那个 >」）。
+                if (unquoted.isEmpty() || unquoted.all { it == '>' }) {
+                    i++
+                    continue
+                }
                 if (unquoted.startsWith(">")) {
                     // 视觉模型爱把要点写成 `- > 要点：xxx`（外面还套一层引号）。这是引用不是列表项，
                     // 照列表项渲染会把「>」原样显示出来。只有「> 要点：」后面没内容的那种直接丢掉 ——

@@ -77,6 +77,7 @@ class DigestActivity : AppCompatActivity() {
         if (intent.getBooleanExtra(EXTRA_DEMO, false)) {
             isDemo = true
             note = DemoNote.note()
+            binding.toolbar.title = note?.title ?: getString(R.string.digest_title)
             show(DemoNote.markdown(), getString(R.string.digest_demo_status))
             return
         }
@@ -124,6 +125,9 @@ class DigestActivity : AppCompatActivity() {
      */
     private fun bindNote() {
         val n = note ?: return
+        // 页面标题跟着笔记走：原来是布局里的默认「知识点笔记」，列表里叫《全铜拇指相机制作教程》，
+        // 打开却顶着一个通用标题，看起来像串了另一篇。
+        binding.toolbar.title = n.title
         lifecycleScope.launch {
             val saved = withContext(Dispatchers.IO) { NoteStore.readDigest(n.id) }
             val stale = withContext(Dispatchers.IO) { NoteStore.digestStale(n.id) }

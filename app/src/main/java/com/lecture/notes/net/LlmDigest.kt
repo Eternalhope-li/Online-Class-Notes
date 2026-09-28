@@ -164,10 +164,14 @@ object LlmDigest {
             }
         }
         // 顺序有讲究：先拆掉模型加的围栏（整篇的、包半截的，见 MiniMarkdown.demoteFences），
-        // 再去重（这时图还没插进去，删重复不会带走图片），
-        // 然后插图和图示兜底，最后收掉「没布置作业」的空壳小节
-        val clean = tidyDigest(MiniMarkdown.demoteFences(unwrapFence(body)))
-        val placed = dropEmptyHomework(unwrapFence(MiniMarkdown.hoistImages(embedImages(clean, note))))
+        // 再去重、收掉「没布置作业」的空壳小节和只剩套话的小节 —— 这些都必须排在插图之前，
+        // 删小节才不至于连刚插好的图一起带走；
+        // 然后按时间戳（拿不到就按内容，见 placeByContent）把图插回正文，
+        // 最后把模型塞在要点行里的图提出来，单独占一行。
+        val clean = tidyTemplates(
+            dropGenericTips(dropEmptyHomework(tidyDigest(MiniMarkdown.demoteFences(unwrapFence(body)))))
+        )
+        val placed = unwrapFence(MiniMarkdown.hoistImages(embedImages(clean, note)))
         // 第一行是模型写的「题目：xxx」，它只用来给笔记命名，正文里不留这一行
         // 时间戳的使命到这儿就结束了：图已经按它插好了，成品里不再留坐标
         val (topic, text) = splitTopic(stripTimestamps(placed))
@@ -476,7 +480,10 @@ object LlmDigest {
                 out.add("    " + raw)
                 continue
             }
+            // 视觉模型的最后一行是「> 要点：xxx」，它那个「要点：」是提示词要来的栏目名，
+            // 不是内容：原样喂过去，模型就会在笔记里多写一行「- 要点：……」，所以先摘掉。
             val t = raw.trim('-', '*', '+', '>', '#', '·', '•', ' ')
+                .removePrefix("要点：").removePrefix("要点:").trim()
             if (t.isEmpty()) continue
             out.add("    - " + t)
         }
@@ -512,15 +519,16 @@ object LlmDigest {
      * 免得成品里留一串看不懂的记号。插进去的只有图片本身：图上讲了什么，模型已经按上面的
      * 要求整理进周围的要点里了，不再把视觉模型的原文照抄一遍。
      *
-     * [appendFallback] 为真时，正文一行时间戳都没有（模型把时间戳全删了）才退回
-     * 文末的「本课图示」小节 —— 位置差一点也比丢图好。流式预览传 false：
+     * 模型把时间戳全删了（glm-4-flash 常干的事）时还有第二手：按内容算落点，
+     * 见 [placeByContent] —— 图仍然进正文。只有连一节正经小标题都没有时才退回文末的
+     * 「本课图示」小节，位置差一点也比丢图好。流式预览传 false：
      * 正文还没吐出来的时候不该先在文末滚一排图。
      */
     internal fun embedImages(md: String, note: Note, appendFallback: Boolean = true): String {
         val all = shots(note)
         if (all.isEmpty()) return md
         val body = stripMarks(md)
-        val placed = placeByTime(body, all)
+        val placed = placeByTime(body, all) ?: placeByContent(body, all, note)
         if (placed != null) return placed
         if (!appendFallback) return body
         return (body.trimEnd() + "\n\n" + NoteStore.shotsSection(note)).trim()
@@ -582,9 +590,117 @@ object LlmDigest {
             for (e in group) {
                 out.add("")
                 out.add(figure(e))
+                out.add("")
             }
         }
         return out.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
+    }
+
+    /** 截图前后这么久之内的转写，算这张图的「上下文证据」。 */
+    private const val NEAR_MS = 25_000L
+
+    /** 比对用的连续字块：中文按二字窗切，英文数字按整词切。 */
+    private val WORD_RUN = Regex("[\\u4e00-\\u9fa5A-Za-z0-9]+")
+
+    /**
+     * 时间戳兜底没得用时（正文一个 `[mm:ss]` 都没有）的第二手：按内容把图放回最像它的那一行。
+     *
+     * 为什么非要有这一条：glm-4-flash 经常不理会「保留时间戳」的要求，而**只**靠时间戳定位的
+     * [placeByTime] 一旦拿不到坐标就只能返回 null，整篇的图会一起堆到文末的「本课图示」里 ——
+     * 用户看到的正是「图跟正文对不上、全挤在最后」。
+     *
+     * 做法拿的是 App 本来就有的两份数据：视觉模型对这张图的说明，加截图前后 [NEAR_MS] 毫秒的
+     * 转写，拼成「证据」，再跟正文逐行比字面重合，重合最多的那一行就是落点。捡不出来
+     * （截图和正文一个字都对不上）时按时间在整节课里的位置，落到进度上大致对应的那一节末尾。
+     *
+     * 正文里连一节小标题都没有（模型没分节）时返回 null，交给调用方退回文末的汇总小节。
+     */
+    private fun placeByContent(body: String, images: List<Entry>, note: Note): String? {
+        val lines = body.split('\n')
+        val heads = ArrayList<Int>()
+        for ((i, line) in lines.withIndex()) if (HEAD_ONE.containsMatchIn(line)) heads.add(i)
+        if (heads.isEmpty()) return null
+        val span = spanSeconds(note)
+        val buckets = HashMap<Int, MutableList<Entry>>()
+        for (e in images) {
+            val grams = gramsOf(evidenceOf(e, note))
+            var at = -1
+            var best = 0
+            for ((i, line) in lines.withIndex()) {
+                if (line.isBlank() || grams.isEmpty()) continue
+                var score = 0
+                for (g in grams) if (line.contains(g)) score++
+                if (score > best) {
+                    best = score
+                    at = i
+                }
+            }
+            if (at < 0) {
+                val frac = (e.atMs / 1000.0 / span).coerceIn(0.0, 0.9999)
+                val k = (frac * heads.size).toInt().coerceIn(0, heads.size - 1)
+                val end = if (k + 1 < heads.size) heads[k + 1] else lines.size
+                at = lastBodyLine(lines, heads[k], end)
+            }
+            // 标题行不能当落点：图插在标题和它的正文之间很难看
+            if (HEAD_ONE.containsMatchIn(lines[at])) {
+                var n = at + 1
+                while (n < lines.size && HEAD_ONE.containsMatchIn(lines[n])) n++
+                if (n < lines.size) at = n
+            }
+            buckets.getOrPut(at) { ArrayList() }.add(e)
+        }
+        val out = ArrayList<String>(lines.size + images.size * 3)
+        for ((i, line) in lines.withIndex()) {
+            out.add(line)
+            val group = buckets[i] ?: continue
+            for (e in group.sortedBy { it.atMs }) {
+                out.add("")
+                out.add(figure(e))
+                out.add("")
+            }
+        }
+        return out.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
+    }
+
+    /** 一节里最后一行有内容的行（末行是空行时往回退）。 */
+    private fun lastBodyLine(lines: List<String>, from: Int, to: Int): Int {
+        var i = (to - 1).coerceIn(0, lines.size - 1)
+        while (i > from && lines[i].isBlank()) i--
+        return i
+    }
+
+    /** 整篇的时间跨度（秒）：优先用录音时长，时长缺失时退到最后一句话的时间。 */
+    private fun spanSeconds(note: Note): Double {
+        val last = note.entries.maxOfOrNull { it.atMs } ?: 0L
+        return maxOf(note.durationMs, last, 1000L) / 1000.0
+    }
+
+    /** 一张图的「证据」：视觉模型对它的说明 + 截图前后那半分钟的转写。 */
+    private fun evidenceOf(e: Entry, note: Note): String {
+        val sb = StringBuilder(e.caption)
+        for (x in note.entries) {
+            if (x.isImage || x.text.isBlank()) continue
+            if (x.atMs >= e.atMs - NEAR_MS && x.atMs <= e.atMs + NEAR_MS) {
+                sb.append('\n').append(x.text)
+            }
+        }
+        return sb.toString()
+    }
+
+    /** 比对碎片：太短的和纯数字的丢掉（「视频」「效果」这种够用，「60」只会到处误撞）。 */
+    private fun gramsOf(s: String): List<String> {
+        val out = ArrayList<String>()
+        for (m in WORD_RUN.findAll(s)) {
+            val t = m.value
+            if (t.length < 2) continue
+            for (i in 0 until t.length - 1) {
+                val g = t.substring(i, i + 2)
+                if (g.all { it.isDigit() }) continue
+                out.add(g)
+            }
+            if (out.size > 400) break
+        }
+        return out
     }
 
     /**
@@ -803,6 +919,136 @@ object LlmDigest {
             i = from
         }
         return lines.joinToString("\n").trim()
+    }
+
+    /** 放到哪节课都成立的导语：「本节课将介绍……包括所需材料、制作步骤和注意事项」。 */
+    private val TEMPLATE_LEAD = Regex(
+        "(本节课?|本节|本课|这节课)\\s*(将|会)?\\s*(介绍|讲解|说明|学习|带大家|围绕|涵盖)|" +
+            "(通过|学完|学习)(本节|本课|这节课)|" +
+            "包括\\s*(所需|了)?\\s*(材料|制作步骤|注意事项)|" +
+            "(掌握|学会|了解)\\s*制作.*的\\s*(基本)?\\s*(技能|方法|流程)"
+    )
+
+    /** 「五、总结」「小结」这类收尾小节的标题。 */
+    private val TEMPLATE_SECTION_HEAD = Regex(
+        "^#{1,4}\\s*(?:[一二三四五六七八九十\\d]+\\s*[、.．)）]\\s*)?(课程|本节|本课|全课)?(总结|小结|回顾|结语)\\s*$"
+    )
+
+    /** 只有套话的一行：「本节课介绍了……」「通过学习可以掌握……」这种。 */
+    private val HOLLOW_LINE = Regex(
+        "(本节课?|本节|本课|这节课|通过(本节|本课|这节课)).{0,16}(介绍|讲解|学习|了解|掌握|认识|回顾|总结|包括)|" +
+            "(通过|学完|学习|掌握)了?.{0,12}(技能|方法|知识|要点|流程)"
+    )
+
+    /** 「注意安全」「避免短路」「确保稳固」这类通用提醒。 */
+    private val GENERIC_TIP = Regex(
+        "^[-*+]\\s*(?:(注意|小心|记得|务必|确保|避免|别忘|不要|禁止|谨记)[^。！？!?]{0,20}" +
+            "(安全|触电|短路|受伤|危险|稳固|正确|质量|牢固|效率|耐心|细心)|" +
+            "[^。！？!?]{0,10}(要|需|保持|多加|注意)[^。！？!?]{0,6}(耐心|细心|认真|用心|练习|实践))"
+    )
+
+    /**
+     * 模型写出来的两种套话，提示词按不住，只能在成品上兜一道：
+     *
+     *  1. 导语写成「本节课将介绍如何制作……包括所需材料、制作步骤和注意事项」——
+     *     这种话放到哪节课都成立，等于什么都没说，整行删掉；
+     *  2. 末尾留一节「五、总结」，里面全是「本节课介绍了……通过学习可以掌握……」——
+     *     整节删掉（标题一起删）。真总结了具体结论（有任何一行是自己的话）的小节不会误伤。
+     *
+     * 只认正文最前面那条引用块当导语，正文中间真写出来的引用不受影响。
+     */
+    internal fun tidyTemplates(md: String): String {
+        val lines = md.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val kept = ArrayList<String>(lines.size)
+        var started = false
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            if (!started) {
+                val t = line.trimStart()
+                val quoted = t.startsWith(">") || t.startsWith("- >") || t.startsWith("* >")
+                val bullet = t.startsWith("- ") || t.startsWith("* ") || t.startsWith("+ ")
+                val probe = t.removePrefix("- ").removePrefix("* ").trimStart().removePrefix(">").trim()
+                // 正文最前面那几行里，命中模板腔的导语整行删掉：引用块、或者单独成段的。
+                // 带列表符号的普通要点不动（那可能是真内容），除非它本身就是「- > ……」这种引用。
+                if ((quoted || !bullet) && TEMPLATE_LEAD.containsMatchIn(probe)) {
+                    i++
+                    if (i < lines.size && lines[i].isBlank()) i++
+                    continue
+                }
+                // 「题目：xxx」和空行都不算正文开始 —— 模型把导语排在题目行后面是常态，
+                // 之前只认「第一行就是导语」，于是导语一次都没被删掉过。
+                if (t.isNotEmpty() && !TOPIC_RE.containsMatchIn(line)) started = true
+            }
+            kept.add(line)
+            i++
+        }
+        return dropHollowSections(kept.joinToString("\n"))
+    }
+
+    /** 只有套话的小节（「五、总结」）连标题一起删掉。 */
+    private fun dropHollowSections(md: String): String {
+        val lines = md.split('\n').toMutableList()
+        var i = 0
+        while (i < lines.size) {
+            if (!TEMPLATE_SECTION_HEAD.matches(lines[i].trim())) {
+                i++
+                continue
+            }
+            var end = i + 1
+            while (end < lines.size && !lines[end].trimStart().startsWith("#")) end++
+            val body = lines.subList(i + 1, end).map { it.trim() }.filter { it.isNotEmpty() }
+            if (body.isEmpty() || body.any { !HOLLOW_LINE.containsMatchIn(it) }) {
+                i = end
+                continue
+            }
+            var from = i
+            while (from > 0 && lines[from - 1].isBlank()) from--
+            var to = end
+            while (to < lines.size && lines[to].isBlank()) to++
+            lines.subList(from, to).clear()
+            i = from
+        }
+        return lines.joinToString("\n").trim()
+    }
+
+    /**
+     * 剔掉「注意安全 / 避免短路 / 确保稳固」这类放到哪节课都成立的提醒。
+     *
+     * 只在**这一节本来就有三条以上要点**时动手：老师真讲过的东西也常常是「注意」开头，
+     * 一节本来就只有一两条时宁可留着 —— 与其删干净，不如让小节看起来完整。
+     */
+    internal fun dropGenericTips(md: String): String {
+        val lines = md.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        val out = ArrayList<String>(lines.size)
+        var i = 0
+        while (i < lines.size) {
+            if (!HEAD_ONE.containsMatchIn(lines[i])) {
+                out.add(lines[i])
+                i++
+                continue
+            }
+            var end = i + 1
+            while (end < lines.size && !HEAD_ONE.containsMatchIn(lines[end])) end++
+            val body = lines.subList(i, end)
+            val bullets = body.count { BULLET_ONE.containsMatchIn(it) }
+            val flags = body.map { GENERIC_TIP.containsMatchIn(it.trim()) }
+            if (bullets < 3 || !flags.any { it }) {
+                out.addAll(body)
+                i = end
+                continue
+            }
+            // 剔完只剩标题的「注意事项」本身就是凑数的小节（模型习惯性要一节），连标题一起删；
+            // 还有内容就留着 —— 老师真讲过的注意事项比「有这一节」重要。
+            val keptBody = body.withIndex().filter { !flags[it.index] }.map { it.value }
+            if (keptBody.drop(1).none { it.isNotBlank() }) {
+                while (out.isNotEmpty() && out.last().isBlank()) out.removeAt(out.size - 1)
+            } else {
+                out.addAll(keptBody)
+            }
+            i = end
+        }
+        return out.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
     }
     /** 能当截图落点的行：带时间戳的正文行（标题、表格、代码块都不算）。 */
     private fun anchorsOf(lines: List<String>): List<Int> {
@@ -1273,6 +1519,7 @@ object LlmDigest {
         题目里的词要和素材对得上：语音转写会把术语听成同音字（通篇在讲铜板、铜外壳，
         「题目」却写成「全头拇指相机」，那就是「全铜」听错了），按素材里的真实内容改对；
         第二行：一条引用块导语（以 "> " 开头），一句话说明这节课讲什么、学完能做什么；
+        导语要用这节课自己的话说，别写「本节课将介绍……包括……」这种放到哪节课都成立的模板句；
         然后按内容分 3-8 个「## 大节」，标题写成这节课真实讲的东西（「两个容易混的公式」这种），
         不要每篇都用同一批标题；内容多的大节下面可以用 "### 小节" 再分一层；
         每个大节下面用 "- `[mm:ss]` 一句话" 列出这一节要讲的要点（每条不超过 25 字，只写要点本身）；
@@ -1325,7 +1572,10 @@ object LlmDigest {
         题目里的每个词都要和正文对得上，同音字按正文改对（正文通篇在讲铜板和铜外壳，
         题目就不该是「全头拇指相机」，那是「全铜」）；正文里同一个术语前后写法不一致时，
         统一成对的那个 —— 标题、小节标题、关键词都要这样拿正文校一遍；
-        第二行是一条引用块导语（以 "> " 开头）：一句话说明这节课讲什么、学完能做什么。
+        第二行是一条引用块导语（以 "> " 开头）：一句话说明这节课讲什么、学完能做什么 ——
+        用这节课自己的话说（「把一块铜板折成外壳，塞进拇指大的摄像头」，而不是
+        「本节课将介绍……包括……」这种放到哪节课都成立的模板句）；别罗列栏目名
+        （「包括所需材料、制作步骤和注意事项」），也别把题目换个说法再重复一遍。
 
         ## 本课知识框架        ← 只在内容真的成体系、有多个分支时才写；短课不要这一节
         用缩进列表画出这一课的体系：主题 → 分支 → 具体知识点，3-8 行，让人一眼看到全貌。

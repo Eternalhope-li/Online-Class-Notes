@@ -232,4 +232,29 @@ class MiniMarkdownTest {
         assertEquals(2, bullets.size)
         assertTrue(bullets.none { it.text.contains("要点") })
     }
+
+    /**
+     * 截图下面那条孤零零的「>」（视觉模型的引用块被套进列表项、内容又空着）。
+     * 照列表项渲染出来，成品里就是一个多余的空引用行和一个「• >」。
+     */
+    @Test
+    fun loneQuoteMarkerBulletIsDropped() {
+        val md = listOf(
+            "- 视频效果展示60fps录像",
+            "  - 这是视频效果",
+            "  - >",
+            "  - > "
+        ).joinToString("\n")
+        val blocks = MiniMarkdown.parse(md)
+        assertEquals("只该剩两条要点：$blocks", 2, blocks.filterIsInstance<Block.Bullet>().size)
+        assertTrue("不该留下空的引用块：$blocks", blocks.none { it is Block.Quote })
+    }
+
+    /** 只写了个「>」的引用块（没有内容）不渲染成空方框。 */
+    @Test
+    fun emptyQuoteBlockIsDropped() {
+        val blocks = MiniMarkdown.parse("- 要点一\n\n>\n\n- 要点二\n")
+        assertTrue("空引用不该占一个方框：$blocks", blocks.none { it is Block.Quote })
+        assertEquals(2, blocks.filterIsInstance<Block.Bullet>().size)
+    }
 }

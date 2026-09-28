@@ -167,12 +167,142 @@ class LlmDigestPlanTest {
         assertTrue(md.contains("![课堂截图 01:05](shots/a.jpg)"))
     }
 
-    /** 模型把时间戳全删了也不能丢图，退回文末的「本课图示」。 */
+    /**
+     * 模型把时间戳全删了（glm-4-flash 的常态）也不能把图堆到文末：
+     * 按「截图说明 + 前后那半分钟的转写」跟正文比字面重合，落点选最像的那一行。
+     */
     @Test
-    fun noTimestampFallsBackToTheEndSection() {
-        val md = LlmDigest.embedImages("## 一、二叉树\n\n- 定义\n", shotNote())
-        assertTrue("没有时间戳只能补到末尾：$md", md.contains("本课图示"))
+    fun noTimestampStillLandsInTheMatchingSection() {
+        val n = Note("t3", "测试课三", 0L, 0L, 0L, "mic")
+        n.entries.add(Entry(5_000L, "先讲摄像模块怎么挑"))
+        n.entries.add(
+            Entry(
+                30_000L, "", image = "shots/a.jpg", analyzed = true,
+                caption = "- 摄像模块的选择\n- 不一定跟老师同款"
+            )
+        )
+        n.entries.add(Entry(60_000L, "再讲外壳怎么折"))
+        val md = LlmDigest.embedImages(
+            "## 一、所需材料\n\n- 摄像模块（不一定同款）\n\n## 二、制作外壳\n\n- 铜板折成外壳\n",
+            n
+        )
+        val img = md.indexOf("![课堂截图")
+        assertTrue("图要进正文：$md", img > 0)
+        assertTrue("图要落在讲摄像模块那一节里：$md", img < md.indexOf("## 二、制作外壳"))
+        assertFalse("落回正文了就不该再有文末汇总：$md", md.contains("本课图示"))
+    }
+
+    /** 截图内容和正文一个字都对不上时，按时间在整节课里的位置落进大致对应的那一节，仍然不进文末。 */
+    @Test
+    fun unmatchedShotStillLandsSomewhereInTheBody() {
+        val n = Note("t4", "测试课四", 0L, 0L, 0L, "mic")
+        n.entries.add(Entry(5_000L, "前半节"))
+        n.entries.add(Entry(55_000L, "", image = "shots/a.jpg", caption = "完全对不上的说明", analyzed = true))
+        n.entries.add(Entry(110_000L, "后半节"))
+        val md = LlmDigest.embedImages(
+            "## 一、甲\n\n- 甲的内容\n\n## 二、乙\n\n- 乙的内容\n", n
+        )
+        val img = md.indexOf("![课堂截图")
+        assertTrue("图要进正文：$md", img > 0)
+        assertTrue("后半程的截图不该落到第一节里：$md", img > md.indexOf("## 二、乙"))
+        assertFalse(md.contains("本课图示"))
+    }
+
+    /** 正文里连一节小标题都没有：没处可插，退回文末的「本课图示」，图不能丢。 */
+    @Test
+    fun noHeadingsFallsBackToTheEndSection() {
+        val md = LlmDigest.embedImages("- 定义\n", shotNote())
+        assertTrue("没有小节只能补到末尾：$md", md.contains("本课图示"))
         assertTrue(md.contains("![课堂截图 01:05](shots/a.jpg)"))
+    }
+
+    /** 「本节课将介绍……包括……」这种放到哪节课都成立的导语，整行删掉。 */
+    @Test
+    fun templateLeadIsDropped() {
+        val md = LlmDigest.tidyTemplates(
+            "> 本节课将介绍如何制作一块全铜拇指相机，包括所需材料、制作步骤和注意事项。\n" +
+                "\n## 一、所需材料\n\n- 摄像模块（不一定同款）\n"
+        )
+        assertFalse("模板导语不该留在成品里：$md", md.contains("本节课将介绍"))
+        assertTrue("正文要留着：$md", md.contains("摄像模块"))
+    }
+
+    /** 末尾那节只有「本节课介绍了……通过学习可以掌握……」的「总结」，连标题一起删。 */
+    @Test
+    fun hollowSummarySectionIsDropped() {
+        val md = LlmDigest.tidyTemplates(
+            "## 一、所需材料\n\n- 摄像模块\n\n## 五、总结\n\n" +
+                "本节课介绍了如何制作一块全铜拇指相机，包括所需材料、制作步骤和注意事项。\n" +
+                "通过学习，学员可以掌握制作全铜拇指相机的基本技能。\n"
+        )
+        assertFalse("只剩套话的小结要整节删掉：$md", md.contains("五、总结"))
+        assertTrue(md.contains("摄像模块"))
+    }
+
+    /** 真写了结论的小结不能被误伤。 */
+    @Test
+    fun realSummarySectionSurvives() {
+        val md = LlmDigest.tidyTemplates("## 五、小结\n\n- 铜板要留 3 毫米折边，否则外壳合不拢。\n")
+        assertTrue("有自己话的小结要留着：$md", md.contains("铜板要留 3 毫米折边"))
+    }
+
+    /** 模型把导语排在「题目：xxx」后面 —— 只认「第一行是导语」的写法时，这句套话一次都删不掉。 */
+    @Test
+    fun templateLeadAfterTopicLineIsDropped() {
+        val md = LlmDigest.tidyTemplates(
+            "题目：全铜拇指相机制作教程\n> 本节课将介绍如何制作一块全铜拇指相机，包括所需材料、制作步骤和注意事项。\n" +
+                "## 一、准备材料\n\n- 摄像模块\n"
+        )
+        assertFalse("模板导语不该留在成品里：$md", md.contains("本节课将介绍"))
+        assertTrue("正文要留着：$md", md.contains("摄像模块"))
+    }
+
+    /** 导语被写成 `- > ……`（外面套了一层列表符号）时同样要删掉。 */
+    @Test
+    fun bulletQuotedTemplateLeadIsDropped() {
+        val md = LlmDigest.tidyTemplates(
+            "- > 本节课将介绍如何制作一块全铜拇指相机，包括所需材料、制作步骤和注意事项。\n" +
+                "## 一、准备材料\n\n- 摄像模块\n"
+        )
+        assertFalse("模板导语不该留在成品里：$md", md.contains("本节课将介绍"))
+    }
+
+    /** 正文里第一条要点就算带「本节课……」，也不能当成导语删掉 —— 那是真内容。 */
+    @Test
+    fun firstRealBulletIsNotMistakenForTheLead() {
+        val md = LlmDigest.tidyTemplates("- 本节课会介绍三种限流电阻的区别\n\n- 摄像模块\n")
+        assertTrue("真要点不能被当成导语删掉：$md", md.contains("三种限流电阻"))
+    }
+
+    /** 「注意安全 / 避免短路 / 确保连接正确」这类通用提醒剔掉，别的要点原样留着。 */
+    @Test
+    fun genericTipsAreDroppedFromBusySections() {
+        val md = LlmDigest.dropGenericTips(
+            "## 三、注意事项\n\n- 使用热熔胶固定电池。\n- 注意电路安全，避免短路。\n" +
+                "- 确保各部件连接正确。\n- 铜板边缘要打磨。\n"
+        )
+        assertFalse("通用安全提醒不该留着：$md", md.contains("避免短路"))
+        assertFalse(md.contains("确保各部件连接正确"))
+        assertTrue("老师真讲过的要留着：$md", md.contains("热熔胶固定电池"))
+        assertTrue(md.contains("铜板边缘要打磨"))
+    }
+
+    /** 一节本来就只有一两条要点时不动它：宁可留着，也别把小节掏空。 */
+    @Test
+    fun shortSectionsAreLeftAlone() {
+        val md = LlmDigest.dropGenericTips("## 三、注意事项\n\n- 注意电路安全。\n- 铜板边缘要打磨。\n")
+        assertTrue("只有两条要点的小节不剔：$md", md.contains("注意电路安全"))
+    }
+
+    /** 一整节全是「注意安全 / 保持耐心 / 确保连接正确」：这一节本身就是凑数的，连标题一起删。 */
+    @Test
+    fun sectionOfOnlyGenericTipsDisappears() {
+        val md = LlmDigest.dropGenericTips(
+            "## 三、注意事项\n\n- 注意电路安全，避免短路。\n- 制作过程中保持耐心。\n- 确保各部件连接正确。\n\n" +
+                "## 四、成品展示\n\n- 实测可用 2 小时。\n"
+        )
+        assertFalse("只剩套话的小节不该留着：$md", md.contains("三、注意事项"))
+        assertTrue("别的小节要留着：$md", md.contains("实测可用 2 小时"))
     }
 
     /** 流式预览传 appendFallback = false：正文还没吐出来的时候别先在文末滚一排图。 */
@@ -235,7 +365,8 @@ class LlmDigestPlanTest {
         val chunk = LlmDigest.plan(n).chunks[0]
         assertFalse("栏目名记号不该原样发给模型：$chunk", chunk.contains("## 定义"))
         assertFalse("引用记号也不该留着：$chunk", chunk.contains("> 要点"))
-        assertTrue("内容本身要留着：$chunk", chunk.contains("    - 要点：ARP 记录表存 IP 和 MAC 的对应关系"))
+        assertTrue("内容本身要留着：$chunk", chunk.contains("    - ARP 记录表存 IP 和 MAC 的对应关系"))
+        assertFalse("「要点：」只是视觉模型要来的栏目名，别喂给整理那一步：$chunk", chunk.contains("要点："))
     }
     @Test
     fun inventedMarkerIsDroppedQuietly() {

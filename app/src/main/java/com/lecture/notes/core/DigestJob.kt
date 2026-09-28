@@ -173,9 +173,10 @@ object DigestJob {
                 })
                 val tag = App.instance.getString(R.string.digest_tag_ai)
                 // 名字还是 App 自动起的（「网课笔记 09-27 17:22」这种），就顺手换成这节课的题目。
-                // 两种情况不动它：用户自己改过名字（autoTitle = false）；或者这个名字本来就是
-                // AI 起的（aiTitle = true）—— 重跑一次不该让笔记名再变一次，翻笔记时对不上。
-                if (draft.topic.isNotEmpty() && note.autoTitle && !note.aiTitle) {
+                // 只有用户自己改过名字（autoTitle = false）才一个字都不动；App 起的名字和上一次
+                // AI 起的名字都是机器名，再整理一遍就该跟着最新这版题目走 —— 上一版要是听错了
+                // （正文通篇讲铜板，题目却是「全头拇指相机」），重跑一次正好把名字也改对。
+                if (draft.topic.isNotEmpty() && note.autoTitle) {
                     NoteStore.rename(note.id, draft.topic, auto = true, ai = true)
                     note.title = draft.topic
                     note.aiTitle = true

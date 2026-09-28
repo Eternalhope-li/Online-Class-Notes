@@ -547,9 +547,11 @@ object NoteStore {
     fun shotBlock(e: Entry): String {
         val sb = StringBuilder()
         sb.append("![课堂截图 ").append(Formats.mmss(e.atMs)).append("](").append(e.image).append(")\n\n")
+        // 视觉模型的说明里偶尔混进一条只有「>」「要点：」的记号行（引用块被截了半截）：
+        // 一律洗掉，别让它在笔记里变成一个孤零零的「>」。
         val lines = e.caption.trim().split('\n')
-            .map { it.trim().removePrefix("- ").removePrefix("* ").trim() }
-            .filter { it.isNotEmpty() }
+            .map { it.trim().removePrefix("- ").removePrefix("* ").removePrefix(">").trim() }
+            .filter { it.isNotEmpty() && it != "要点：" && it != "要点:" && it != "图示" }
         if (lines.isEmpty()) {
             sb.append("- `[").append(Formats.mmss(e.atMs)).append("]` 截图（还没有说明）\n\n")
             return sb.toString()
