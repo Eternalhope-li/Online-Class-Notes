@@ -11,7 +11,6 @@ import com.lecture.notes.data.NoteStore
 import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.ui.DetailActivity
 import com.lecture.notes.ui.DigestActivity
-import com.lecture.notes.ui.MainActivity
 import com.lecture.notes.util.DigestDoc
 import com.lecture.notes.util.Prefs
 import java.util.ArrayDeque
@@ -80,7 +79,6 @@ object DigestJob {
     private var batchTotal = 0
     private var batchDone = 0
     private var batchFailed = 0
-    private var lastNoteId: String? = null
 
     /** 排队等着整理的笔记：批量整理时一篇跑完自动接下一篇。 */
     private val pending = ArrayDeque<Note>()
@@ -213,7 +211,6 @@ object DigestJob {
      */
     private fun finished(id: String, title: String, ok: Boolean, message: String = "") {
         if (ok) batchDone++ else batchFailed++
-        lastNoteId = id
         notifyNoteDone(id, title, ok, message)
         val nextNote = pending.pollFirst()
         if (nextNote != null) {
@@ -245,12 +242,11 @@ object DigestJob {
                 label = "",
                 message = App.instance.getString(R.string.digest_ai_cancelled)
             )
-            // 通知栏那条换成一句回执：这次不会再通知你了
-            notifyCancelled()
-        } else {
-            // 没有任务在跑：那条只可能是上次留下的假通知，撤掉就完事
-            clearNotif()
         }
+        // 不管跑没跑，那条通知都直接收掉 —— 取消了就没什么好再提醒的了。
+        // （没有任务在跑时它只可能是进程被杀之后留下的假通知，更该收掉。）
+        clearNotif()
+        resetBatch()
     }
 
     /** 页面把「完成 / 失败」提示消化掉之后调一下，免得下次进页面又弹一遍。 */
@@ -354,37 +350,10 @@ object DigestJob {
         post(noteNotifId(noteId), b.build())
     }
 
-    /** 用户按了「取消生成」之后的那句回执：让他知道这次不会再通知了。 */
-    private fun notifyCancelled() {
-        val title = _state.value.noteTitle
-        val b = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
-            .setSmallIcon(R.drawable.ic_stat_note)
-            .setContentTitle(App.instance.getString(R.string.digest_ai_notif_cancelled_title))
-            .setAutoCancel(true)
-            .setSilent(true)
-            .setContentIntent(lastNoteId?.let { openNote(it) } ?: openList())
-        if (title.isNotEmpty()) {
-            b.setContentText(App.instance.getString(R.string.digest_ai_notif_note, title))
-        }
-        post(NOTIF_DIGEST, b.build())
-        resetBatch()
-    }
-
     private fun resetBatch() {
         batchTotal = 0
         batchDone = 0
         batchFailed = 0
-        lastNoteId = null
-    }
-
-    /** 打开笔记库：取消的回执没有具体指向哪一篇时，点它就回列表。 */
-    private fun openList(): PendingIntent {
-        val i = Intent(App.instance, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        return PendingIntent.getActivity(
-            App.instance, 0x10CB, i,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
     }
 
     private fun clearNotif() {
