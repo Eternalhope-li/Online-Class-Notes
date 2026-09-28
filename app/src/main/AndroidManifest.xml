@@ -74,6 +74,10 @@
             android:exported="false"
             android:foregroundServiceType="microphone|mediaProjection" />
 
+        <receiver
+            android:name=".core.DigestCancelReceiver"
+            android:exported="false" />
+
         <service
             android:name=".core.ShotService"
             android:exported="false"

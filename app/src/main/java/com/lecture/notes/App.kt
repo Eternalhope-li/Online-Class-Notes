@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import com.lecture.notes.core.DigestJob
 import com.lecture.notes.core.Recorder
 import com.lecture.notes.core.ShotService
 import com.lecture.notes.data.NoteStore
@@ -20,6 +21,9 @@ class App : Application() {
         Prefs.init(this)
         // 进程是新起的，就说明悬浮截图服务早就没了（录屏授权也不可复用），把开关状态归位
         Prefs.shotFloat = false
+        // 整理任务的队列同样在内存里：进程是新的就说明没有任务在跑，通知栏那条
+        // 「AI 正在整理」只可能是上一次被系统杀进程时留下的 —— 撤掉，别让它一直转
+        DigestJob.init()
         NoteStore.init(this)
         // 回收站里放了七天以上的笔记，进程起来时清一次（别等用户想起来再删）
         Thread({ NoteStore.purgeTrash() }, "trash-purge").start()

@@ -52,10 +52,14 @@ object DigestJob {
     }
 
     private const val NOTIF_DONE = 0x10C9
-    private const val NOTIF_PROGRESS = 0x10CA
+    internal const val NOTIF_PROGRESS = 0x10CA
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
+
+    /** 这一趟整理的编号：收尾时用它判断通知栏那条进度还是不是自己的。 */
+    private var runSeq = 0L
+    private var currentRun = 0L
 
     /** 排队等着整理的笔记：批量整理时一篇跑完自动接下一篇。 */
     private val pending = ArrayDeque<Note>()
@@ -66,6 +70,21 @@ object DigestJob {
     fun isRunning(): Boolean = _state.value.running
     fun isRunning(id: String?): Boolean = id != null && _state.value.running && _state.value.noteId == id
     val runningNoteId: String? get() = if (_state.value.running) _state.value.noteId else null
+
+    /**
+     * 进程刚起来时调一下（`App.onCreate`）。
+     *
+     * 队列在内存里：进程是新的，就说明上一趟整理早就没了 —— 多半是 App 在后台被系统杀掉、
+     * 或者用户从最近任务里划掉了。可进度通知是**常驻**的，进程死了它也不会自己消失，
+     * 于是用户会看到一条永远转不完的「AI 正在整理」，而那条笔记其实早就整理好了。
+     * 所以进程一起来就把它撤掉（顺便把状态归零，反正队列本来就是空的）。
+     */
+    fun init() {
+        _state.value = State()
+        pending.clear()
+        currentRun = 0L
+        cancelProgress()
+    }
 
     /** 开始整理一篇笔记：[enqueue] 的单篇版本，返回是否排上了。 */
     fun start(note: Note): Boolean = enqueue(listOf(note)) > 0
@@ -109,6 +128,8 @@ object DigestJob {
     }
 
     private fun run(note: Note) {
+        val myRun = ++runSeq
+        currentRun = myRun
         _state.value = State(
             phase = Phase.RUNNING,
             noteId = note.id,
@@ -152,7 +173,8 @@ object DigestJob {
                 // 用户掐断的是整批：队列一起清掉，别在他走了之后接着跑
                 if (cancelled) pending.clear() else finished(note.id)
             } finally {
-                cancelProgress()
+                // 队列里接着跑下一篇时，这条通知已经属于下一篇了，不能把人家撤掉
+                if (currentRun == myRun) cancelProgress()
             }
         }
     }
@@ -167,24 +189,35 @@ object DigestJob {
         if (_state.value.noteId == id) _state.value = _state.value.copy(queued = 0)
     }
 
-    /** 用户主动掐断：断开正在等的那趟请求，再取消协程。 */
+    /**
+     * 用户主动掐断：断开正在等的那趟请求，再取消协程。
+     *
+     * 也兼顾「压根没有任务在跑」的场面 —— 通知上那颗「取消生成」同时也是「让这条通知消失」：
+     * 进程被系统在后台杀掉之后会剩一条假的常驻通知，点它一下就收拾干净。
+     */
     fun cancel() {
         val st = _state.value
-        if (!st.running) return
-        _state.value = st.copy(
-            phase = Phase.FAILED,
-            label = "",
-            message = App.instance.getString(R.string.digest_ai_cancelled)
-        )
         LlmDigest.cancelActive()
         pending.clear()
         job?.cancel()
+        // 还在跑的那一趟收尾时别再动通知（下面已经撤掉了）
+        currentRun = 0L
+        if (st.running) {
+            _state.value = st.copy(
+                phase = Phase.FAILED,
+                label = "",
+                message = App.instance.getString(R.string.digest_ai_cancelled)
+            )
+        }
         cancelProgress()
     }
 
     /** 页面把「完成 / 失败」提示消化掉之后调一下，免得下次进页面又弹一遍。 */
     fun consume() {
-        if (!_state.value.running && pending.isEmpty()) _state.value = State()
+        if (_state.value.running || pending.isNotEmpty()) return
+        _state.value = State()
+        // 结果页面已经收下了，进度通知没有留下的理由
+        cancelProgress()
     }
 
     // ------------------------------------------------------------ 通知
@@ -218,9 +251,20 @@ object DigestJob {
             .setProgress(0, 0, true)
             .setOngoing(true)
             .setSilent(true)
+            .addAction(R.drawable.ic_close, App.instance.getString(R.string.digest_ai_cancel), cancelIntent())
             .setContentIntent(openNote(id))
             .build()
         post(NOTIF_PROGRESS, n)
+    }
+
+    /** 通知上那颗「取消生成」：走一条广播，进程没活着也能把这条假通知收拾掉。 */
+    private fun cancelIntent(): PendingIntent {
+        val i = Intent(App.instance, DigestCancelReceiver::class.java)
+            .setAction(DigestCancelReceiver.ACTION)
+        return PendingIntent.getBroadcast(
+            App.instance, 0, i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun notifyDone(note: Note) {

@@ -42,7 +42,7 @@ App 私有目录在 Android 上别的 App 读不到；卸载 App 会一并删除
 |---|---|---|
 | 麦克风 `RECORD_AUDIO` | 录下老师讲的声音 | 只能看笔记，不能录 |
 | 前台服务 `FOREGROUND_SERVICE(_MICROPHONE / _MEDIA_PROJECTION)` | 让记录和截图在息屏 / 切 App 时不被系统杀掉 | 记录会被系统随时中断 |
-| 通知 `POST_NOTIFICATIONS` | 两条常驻通知：记录那条带「暂停 / 停止并保存」，悬浮截图那条带「截图 / 关闭」 | 记录照旧，只是通知栏没有控制按钮 |
+| 通知 `POST_NOTIFICATIONS` | 三条常驻通知：记录那条带「暂停 / 停止并保存」，悬浮截图那条带「截图 / 关闭」，AI 整理那条带「取消生成」 | 记录照旧，只是通知栏没有控制按钮 |
 | 唤醒锁 `WAKE_LOCK` | 息屏时 CPU 不被挂起，继续记 | 息屏一段时间后可能漏句 |
 | 音频设置 `MODIFY_AUDIO_SETTINGS` | 内录系统声音（`AudioPlaybackCapture`）要用 | 内录用不了，只能改用麦克风 |
 | 悬浮窗 `SYSTEM_ALERT_WINDOW` | 画那个可以随便拖的截图圆钮 | 用不了悬浮截图 |
