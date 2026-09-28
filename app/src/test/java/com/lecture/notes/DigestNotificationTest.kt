@@ -6,8 +6,12 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.test.core.app.ApplicationProvider
 import com.lecture.notes.core.DigestJob
+import com.lecture.notes.core.CaptureService
+import com.lecture.notes.core.ShotService
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -29,7 +33,7 @@ class DigestNotificationTest {
 
     private fun progressNotification() =
         shadowOf(app.getSystemService(NotificationManager::class.java))
-            .getNotification(DigestJob.NOTIF_PROGRESS)
+            .getNotification(DigestJob.NOTIF_DIGEST)
 
     /** 假装上一次整理留下的那条通知还在通知栏里。 */
     private fun leaveStaleProgress() {
@@ -38,7 +42,30 @@ class DigestNotificationTest {
             .setContentTitle(app.getString(R.string.digest_ai_notif_title))
             .setOngoing(true)
             .build()
-        NotificationManagerCompat.from(app).notify(DigestJob.NOTIF_PROGRESS, n)
+        NotificationManagerCompat.from(app).notify(DigestJob.NOTIF_DIGEST, n)
+    }
+
+    /** 「还剩几篇」优先于分段进度：排队时说还剩多少，最有用。 */
+    @Test
+    fun progressLineCountsTheQueueFirst() {
+        assertEquals("《第一讲》· 还剩 2 篇", DigestJob.progressLine("第一讲", 2, 3, 5))
+        assertEquals("《第一讲》· 第 3/5 段", DigestJob.progressLine("第一讲", 0, 3, 5))
+        assertEquals("《第一讲》· 正在通读", DigestJob.progressLine("第一讲", 0, 1, 1))
+    }
+
+    /** 整理好一篇占一个坑：同一篇永远落回同一个坑，且绝不撞上那条进度通知。 */
+    @Test
+    fun eachNoteOwnsOneResultSlot() {
+        val a = DigestJob.noteNotifId("note-a")
+        assertEquals(a, DigestJob.noteNotifId("note-a"))
+
+        val b = DigestJob.noteNotifId("note-b")
+        assertNotEquals(a, b)
+
+        // 一篇一条地发，最怕两件事：把常驻的进度通知顶掉，或者跑到别的通知身上去
+        assertNotEquals(DigestJob.NOTIF_DIGEST, a)
+        assertNotEquals(CaptureService.NOTIF_ID, a)
+        assertNotEquals(ShotService.NOTIF_ID, a)
     }
 
     @Test

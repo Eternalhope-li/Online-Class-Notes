@@ -11,6 +11,7 @@ import com.lecture.notes.data.NoteStore
 import com.lecture.notes.net.LlmDigest
 import com.lecture.notes.ui.DetailActivity
 import com.lecture.notes.ui.DigestActivity
+import com.lecture.notes.ui.MainActivity
 import com.lecture.notes.util.DigestDoc
 import com.lecture.notes.util.Prefs
 import java.util.ArrayDeque
@@ -51,8 +52,22 @@ object DigestJob {
         val running: Boolean get() = phase == Phase.RUNNING
     }
 
-    private const val NOTIF_DONE = 0x10C9
-    internal const val NOTIF_PROGRESS = 0x10CA
+    /**
+     * 进度通知占的位置：现在在整理哪一篇、后面还排着几篇。
+     *
+     * 它只在这趟整理跑着的时候存在，整批一跑完就撤掉（它是常驻的，绝不能在通知栏里
+     * 留到明天）。整理好的结果由每篇自己的那条通知去报，见 [noteNotifId]。
+     */
+    internal const val NOTIF_DIGEST = 0x10CA
+
+    /**
+     * 整理好一篇，就给它单独占一条结果通知，坑位按笔记 id 算。
+     *
+     * 同一篇重跑会顶掉自己上一次那条，不会越堆越多；一批多选整理完，通知栏里就是
+     * 一篇一条，点哪条开哪篇、划掉哪条就哪条不再提醒。
+     */
+    internal fun noteNotifId(noteId: String): Int = NOTIF_NOTE_BASE + (noteId.hashCode() and 0xFF)
+    private const val NOTIF_NOTE_BASE = 0x10D0
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
@@ -60,6 +75,12 @@ object DigestJob {
     /** 这一趟整理的编号：收尾时用它判断通知栏那条进度还是不是自己的。 */
     private var runSeq = 0L
     private var currentRun = 0L
+
+    /** 这一批（一篇，或多选的好几篇）的账：进度通知上的「第 i/N 篇」全靠它。 */
+    private var batchTotal = 0
+    private var batchDone = 0
+    private var batchFailed = 0
+    private var lastNoteId: String? = null
 
     /** 排队等着整理的笔记：批量整理时一篇跑完自动接下一篇。 */
     private val pending = ArrayDeque<Note>()
@@ -83,7 +104,7 @@ object DigestJob {
         _state.value = State()
         pending.clear()
         currentRun = 0L
-        cancelProgress()
+        clearNotif()
     }
 
     /** 开始整理一篇笔记：[enqueue] 的单篇版本，返回是否排上了。 */
@@ -110,8 +131,14 @@ object DigestJob {
         }
         if (added == 0) return 0
         if (_state.value.running) {
+            // 正在跑：新选的并进同一批，通知上的「还剩 N 篇」跟着涨
+            batchTotal += added
             _state.value = _state.value.copy(queued = pending.size)
         } else {
+            // 全新的一批：账从头开始记
+            batchTotal = added
+            batchDone = 0
+            batchFailed = 0
             next()
         }
         return added
@@ -127,6 +154,7 @@ object DigestJob {
         run(note)
     }
 
+    /** 开跑一篇。上一篇的结果通知已经单独发过了，这里只管把那条进度顶上去。 */
     private fun run(note: Note) {
         val myRun = ++runSeq
         currentRun = myRun
@@ -157,8 +185,7 @@ object DigestJob {
                 }
                 NoteStore.saveDigest(note.id, DigestDoc.ai(note, tag, draft.body))
                 _state.value = _state.value.copy(phase = Phase.DONE, label = "")
-                notifyDone(note)
-                finished(note.id)
+                finished(note.id, note.title, ok = true)
             } catch (t: Throwable) {
                 val cancelled = t is CancellationException || t.message == LlmDigest.CANCELLED
                 val msg = if (cancelled) {
@@ -168,25 +195,35 @@ object DigestJob {
                 }
                 val prev = _state.value
                 _state.value = prev.copy(phase = Phase.FAILED, label = "", message = msg)
-                // 用户自己取消的就不用通知了，页面上给个提示即可
-                if (!cancelled) notifyFailed(note, msg)
                 // 用户掐断的是整批：队列一起清掉，别在他走了之后接着跑
-                if (cancelled) pending.clear() else finished(note.id)
+                // （取消那条路不发结果通知 —— cancel() 已经给了一句「已取消」回执）
+                if (cancelled) pending.clear() else finished(note.id, note.title, ok = false, message = msg)
             } finally {
                 // 队列里接着跑下一篇时，这条通知已经属于下一篇了，不能把人家撤掉
-                if (currentRun == myRun) cancelProgress()
+                if (currentRun == myRun) clearNotif()
             }
         }
     }
 
-    /** 一篇跑完：队列里还有就接着跑下一篇，没有就把排队数收回 0。 */
-    private fun finished(id: String) {
-        val note = pending.pollFirst()
-        if (note != null) {
-            run(note)
+    /**
+     * 一篇收工（成功、失败都走这里）。
+     *
+     * 每整理好一篇当场发它自己那条通知（顺便响一声），然后接着跑队列里的下一篇；
+     * 整批跑完，把那条常驻的进度通知撤掉 —— 通知栏里只留下每篇自己的结果。
+     */
+    private fun finished(id: String, title: String, ok: Boolean, message: String = "") {
+        if (ok) batchDone++ else batchFailed++
+        lastNoteId = id
+        notifyNoteDone(id, title, ok, message)
+        val nextNote = pending.pollFirst()
+        if (nextNote != null) {
+            _state.value = _state.value.copy(queued = pending.size)
+            run(nextNote)
             return
         }
         if (_state.value.noteId == id) _state.value = _state.value.copy(queued = 0)
+        clearNotif()
+        resetBatch()
     }
 
     /**
@@ -208,16 +245,31 @@ object DigestJob {
                 label = "",
                 message = App.instance.getString(R.string.digest_ai_cancelled)
             )
+            // 通知栏那条换成一句回执：这次不会再通知你了
+            notifyCancelled()
+        } else {
+            // 没有任务在跑：那条只可能是上次留下的假通知，撤掉就完事
+            clearNotif()
         }
-        cancelProgress()
     }
 
     /** 页面把「完成 / 失败」提示消化掉之后调一下，免得下次进页面又弹一遍。 */
     fun consume() {
         if (_state.value.running || pending.isNotEmpty()) return
         _state.value = State()
-        // 结果页面已经收下了，进度通知没有留下的理由
-        cancelProgress()
+    }
+
+    /**
+     * 用户已经翻到这篇整理稿了，那条「整理好了」的通知就没必要再占着通知栏。
+     *
+     * 正在整理的那一篇不动 —— 那条是进度，用户还要看着它（页面上也有「取消生成」）。
+     */
+    fun clearNoteNotif(noteId: String) {
+        if (isRunning(noteId)) return
+        try {
+            NotificationManagerCompat.from(App.instance).cancel(noteNotifId(noteId))
+        } catch (_: Throwable) {
+        }
     }
 
     // ------------------------------------------------------------ 通知
@@ -235,26 +287,38 @@ object DigestJob {
     private fun notifyProgress() {
         val st = _state.value
         val id = st.noteId ?: return
-        val text = when {
-            st.queued > 0 ->
-                App.instance.getString(R.string.digest_ai_notif_queue, st.noteTitle, st.queued)
-
-            st.total > 1 ->
-                App.instance.getString(R.string.digest_ai_notif_progress_multi, st.noteTitle, st.done, st.total)
-
-            else -> App.instance.getString(R.string.digest_ai_notif_progress, st.noteTitle)
-        }
-        val n = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
+        val b = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
             .setSmallIcon(R.drawable.ic_stat_note)
             .setContentTitle(App.instance.getString(R.string.digest_ai_notif_title))
-            .setContentText(text)
-            .setProgress(0, 0, true)
+            .setContentText(progressLine(st.noteTitle, pending.size, st.done, st.total))
             .setOngoing(true)
+            // 安静更新：分段进度刷得很勤，每段都响一声全是噪音。「整理好了」那一下
+            // 由每篇自己的结果通知去响，进度这条只管报告「还在跑、还剩几篇」。
             .setSilent(true)
             .addAction(R.drawable.ic_close, App.instance.getString(R.string.digest_ai_cancel), cancelIntent())
             .setContentIntent(openNote(id))
-            .build()
-        post(NOTIF_PROGRESS, n)
+            // 兜底：万一这趟整理整个卡死（进程被系统冻住、网络吊住），这条常驻通知
+            // 也不该在通知栏里转到天荒地老。每次刷新进度都会重置这个计时。
+            .setTimeoutAfter(20 * 60 * 1000L)
+        // 好几篇的时候给一条能看出走了多少的进度条，右下角标「第 2/5 篇」；
+        // 单篇没有总量可比，还是转圈
+        if (batchTotal > 1) {
+            val done = (batchDone + batchFailed).coerceAtMost(batchTotal)
+            b.setProgress(batchTotal, done, false)
+            b.setSubText(
+                App.instance.getString(R.string.digest_ai_notif_batch_count, (done + 1).coerceAtMost(batchTotal), batchTotal)
+            )
+        } else {
+            b.setProgress(0, 0, true)
+        }
+        post(NOTIF_DIGEST, b.build())
+    }
+
+    /** 进度通知第二行：「还剩几篇」优先，其次是分段进度，最后是通读中。 */
+    internal fun progressLine(title: String, remaining: Int, done: Int, total: Int): String = when {
+        remaining > 0 -> App.instance.getString(R.string.digest_ai_notif_batch_more, title, remaining)
+        total > 1 -> App.instance.getString(R.string.digest_ai_notif_progress_multi, title, done, total)
+        else -> App.instance.getString(R.string.digest_ai_notif_progress, title)
     }
 
     /** 通知上那颗「取消生成」：走一条广播，进程没活着也能把这条假通知收拾掉。 */
@@ -267,32 +331,65 @@ object DigestJob {
         )
     }
 
-    private fun notifyDone(note: Note) {
-        val n = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
+    /**
+     * 一篇整理好了（或者没成）：给它单独发一条通知。
+     *
+     * 用户要的就是「整理好一篇就通知一篇」：一批多选整理下来，通知栏里一篇一条，
+     * 各点各的、各划各的，不会互相顶掉。失败了把模型那句人话理由摊开写清楚。
+     */
+    private fun notifyNoteDone(noteId: String, title: String, ok: Boolean, message: String) {
+        val b = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
             .setSmallIcon(R.drawable.ic_stat_note)
-            .setContentTitle(App.instance.getString(R.string.digest_ai_notif_done))
-            .setContentText(note.title)
+            .setContentTitle(
+                App.instance.getString(
+                    if (ok) R.string.digest_ai_notif_done else R.string.digest_ai_notif_failed
+                )
+            )
+            .setContentText(App.instance.getString(R.string.digest_ai_notif_note, title))
             .setAutoCancel(true)
-            .setContentIntent(openNote(note.id))
-            .build()
-        post(NOTIF_DONE, n)
+            .setContentIntent(openNote(noteId))
+        if (!ok && message.isNotBlank()) {
+            b.setStyle(NotificationCompat.BigTextStyle().bigText(message))
+        }
+        post(noteNotifId(noteId), b.build())
     }
 
-    private fun notifyFailed(note: Note, msg: String) {
-        val n = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
+    /** 用户按了「取消生成」之后的那句回执：让他知道这次不会再通知了。 */
+    private fun notifyCancelled() {
+        val title = _state.value.noteTitle
+        val b = NotificationCompat.Builder(App.instance, App.CHANNEL_DIGEST)
             .setSmallIcon(R.drawable.ic_stat_note)
-            .setContentTitle(App.instance.getString(R.string.digest_ai_notif_failed))
-            .setContentText(msg)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(msg))
+            .setContentTitle(App.instance.getString(R.string.digest_ai_notif_cancelled_title))
             .setAutoCancel(true)
-            .setContentIntent(openNote(note.id))
-            .build()
-        post(NOTIF_DONE, n)
+            .setSilent(true)
+            .setContentIntent(lastNoteId?.let { openNote(it) } ?: openList())
+        if (title.isNotEmpty()) {
+            b.setContentText(App.instance.getString(R.string.digest_ai_notif_note, title))
+        }
+        post(NOTIF_DIGEST, b.build())
+        resetBatch()
     }
 
-    private fun cancelProgress() {
+    private fun resetBatch() {
+        batchTotal = 0
+        batchDone = 0
+        batchFailed = 0
+        lastNoteId = null
+    }
+
+    /** 打开笔记库：取消的回执没有具体指向哪一篇时，点它就回列表。 */
+    private fun openList(): PendingIntent {
+        val i = Intent(App.instance, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        return PendingIntent.getActivity(
+            App.instance, 0x10CB, i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun clearNotif() {
         try {
-            NotificationManagerCompat.from(App.instance).cancel(NOTIF_PROGRESS)
+            NotificationManagerCompat.from(App.instance).cancel(NOTIF_DIGEST)
         } catch (_: Throwable) {
         }
     }

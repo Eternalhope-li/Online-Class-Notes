@@ -253,7 +253,8 @@ class CaptureService : Service() {
 
     companion object {
         private const val TAG = "CaptureService"
-        private const val NOTIF_ID = 0x10C7
+        // internal：单测要拿它对着 AI 整理那几条通知的坑位，确认三者不会互相顶掉
+        internal const val NOTIF_ID = 0x10C7
 
         const val ACTION_START = "com.lecture.notes.START"
         const val ACTION_STOP = "com.lecture.notes.STOP"

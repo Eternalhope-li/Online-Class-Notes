@@ -91,6 +91,8 @@ class DigestActivity : AppCompatActivity() {
             }
             note = n
             if (DigestJob.isRunning(n.id)) aiWatch = true
+            // 人都翻到这篇整理稿了，那条「整理好了」的通知就别再占着通知栏
+            DigestJob.clearNoteNotif(n.id)
             bindNote()
         }
     }
@@ -103,6 +105,7 @@ class DigestActivity : AppCompatActivity() {
         // 从别的页面（或从通知）回来时，这篇笔记的后台整理可能还在跑：
         // 接上进度，别让页面看起来像「什么都没发生」。
         if (DigestJob.isRunning(n.id)) aiWatch = true
+        DigestJob.clearNoteNotif(n.id)
         lifecycleScope.launch {
             val saved = withContext(Dispatchers.IO) { NoteStore.readDigest(n.id) }
             if (!saved.isNullOrBlank() && saved != markdown) {
