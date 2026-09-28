@@ -341,7 +341,10 @@ class DigestActivity : AppCompatActivity() {
             // 宽到放得下两栏（平板横过来）时，目录搬到左边那根常驻侧栏，
             // 正文右边收成一条阅读栏 —— 而不是让每行八十个字横着扫，同时目录还压在正文顶上占高度
             val side = binding.tocPane
-            renderer.shotMaxDp = if (twoPane) SHOT_MAX_LAND_DP else NoteRenderer.SHOT_MAX_DP
+            // 横屏（layout-land）一律按横屏那份上限收图：横过来的屏幕矮，图一大就把正文挤没了。
+            // 手机上横过来同样走这条 —— 那种屏更矮，更该让位给字。
+            renderer.shotMaxDp =
+                if (binding.tocPane != null) SHOT_MAX_LAND_DP else NoteRenderer.SHOT_MAX_DP
             renderer.columnWidthDp = columnWidthDp(twoPane)
             renderer.render(binding.contentBox, md, binding.scroll, if (twoPane) side else null)
             binding.sidePane?.visibility =
@@ -481,7 +484,7 @@ class DigestActivity : AppCompatActivity() {
         /** 正文阅读栏的上限：再宽也是一行这么多字，眼睛才好扫。 */
         private const val READING_COLUMN_DP = 900
 
-        /** 横屏（两栏）时截图的宽度上限：屏幕矮，图收一点，正文才露得出来。 */
-        private const val SHOT_MAX_LAND_DP = 460
+        /** 横屏时截图的宽度上限：屏幕矮，图收一档，正文才露得出来（竖屏仍是 [NoteRenderer.SHOT_MAX_DP]）。 */
+        private const val SHOT_MAX_LAND_DP = 380
     }
 }

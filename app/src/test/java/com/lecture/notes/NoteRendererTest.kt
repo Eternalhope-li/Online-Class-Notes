@@ -164,22 +164,26 @@ class NoteRendererTest {
         assertTrue("图宽要收在 500dp 以内：${holder.width} / $cap", holder.width <= cap + 1)
     }
 
-    /** 横屏（屏幕矮）时页面能把上限调小一点，让图再收些、正文多露两行。 */
+    /** 横屏（屏幕矮）时页面把上限调得更紧，让图再收一档、正文多露两行。 */
     @Test
     fun shotCapCanBeLoweredForShortScreens() {
         val ctx = context()
         val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         NoteRenderer(ctx).apply {
             columnWidthDp = 1200
-            shotMaxDp = 460
+            shotMaxDp = 380
         }.render(root, "- 要点\n\n![课堂截图 00:12](shots/x.jpg)\n", null)
         val dense = ctx.resources.displayMetrics.density
         measure(root, (1200f * dense).toInt())
         val all = ArrayList<View>()
         collect(root, all)
         val holder = all.filterIsInstance<ImageView>().first().parent as View
-        val cap = (460f * dense).toInt()
-        assertTrue("横屏调小的上限要生效：${holder.width} / $cap", holder.width <= cap + 1)
+        val cap = (380f * dense).toInt()
+        assertTrue("横屏调紧的上限要生效：${holder.width} / $cap", holder.width <= cap + 1)
+        assertTrue(
+            "横屏的上限得比默认那份更紧：${holder.width}",
+            holder.width < (NoteRenderer.SHOT_MAX_DP * dense).toInt()
+        )
     }
 
     /** 栏比上限还窄（手机）时按栏宽来：500dp 的上限不能把图撑出栏外。 */
